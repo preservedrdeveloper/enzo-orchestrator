@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Enzo Review</title>
+  <link rel="stylesheet" href="/review-assets/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <a class="brand" href="#" aria-label="Enzo home">
+      <span class="brand-mark" aria-hidden="true">E</span>
+      <span>Enzo</span>
+    </a>
+    <div class="header-context">
+      <span id="feature-key">Loading…</span>
+      <span class="separator" aria-hidden="true">/</span>
+      <strong id="feature-title">Artifact review</strong>
+    </div>
+    <div class="reviewer" title="V0 local reviewer identity">
+      <span class="presence" aria-hidden="true"></span>
+      <span id="reviewer-id">reviewer</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="stage-strip" aria-label="Feature lifecycle">
+      <div id="stage-track" class="stage-track"></div>
+    </section>
+
+    <div class="workspace">
+      <article class="document-panel" aria-labelledby="artifact-title">
+        <div class="document-header">
+          <div>
+            <div class="eyebrow">Artifact review</div>
+            <h1 id="artifact-title">Loading revision…</h1>
+          </div>
+          <div class="document-meta">
+            <span id="status-chip" class="status-chip">LOADING</span>
+            <span id="content-hash" class="hash"></span>
+          </div>
+        </div>
+
+        <div id="selection-hint" class="selection-hint">
+          Select text in the artifact to attach precise feedback.
+        </div>
+        <pre id="artifact-source" class="artifact-source" tabindex="0" aria-label="Markdown artifact source"></pre>
+
+        <details id="execution-plan-panel" class="supplement" hidden>
+          <summary>Machine-readable execution plan</summary>
+          <pre id="execution-plan-source"></pre>
+        </details>
+
+        <footer class="revision-footer">
+          <span>Immutable revision history</span>
+          <nav id="revision-history" aria-label="Artifact revisions"></nav>
+        </footer>
+      </article>
+
+      <aside class="review-panel" aria-labelledby="feedback-title">
+        <div class="review-panel-header">
+          <div>
+            <div class="eyebrow">Human gate</div>
+            <h2 id="feedback-title">Review feedback</h2>
+          </div>
+          <span id="feedback-count" class="count">0</span>
+        </div>
+
+        <section id="composer" class="composer" hidden>
+          <div class="composer-label">Comment on selection</div>
+          <blockquote id="selected-quote"></blockquote>
+          <label>
+            Section
+            <input id="feedback-section" maxlength="200" placeholder="Optional section">
+          </label>
+          <label>
+            Feedback
+            <textarea id="feedback-comment" rows="4" maxlength="10000" placeholder="What should change?"></textarea>
+          </label>
+          <div class="composer-actions">
+            <button id="cancel-comment" class="button ghost" type="button">Cancel</button>
+            <button id="add-comment" class="button primary" type="button">Add feedback</button>
+          </div>
+        </section>
+
+        <div id="feedback-list" class="feedback-list"></div>
+        <div id="empty-feedback" class="empty-state">
+          <span class="empty-icon" aria-hidden="true">⌁</span>
+          <strong>No feedback yet</strong>
+          <span>Select text to start a review.</span>
+        </div>
+
+        <div class="decision-bar">
+          <p id="decision-help">Loading available actions…</p>
+          <div class="decision-actions">
+            <button id="manual-edit" class="button secondary" type="button" hidden>Edit manually</button>
+            <button id="address-agent" class="button secondary" type="button" hidden>Address with Agent</button>
+            <button id="request-changes" class="button danger" type="button" hidden>Request changes</button>
+            <button id="approve" class="button approve" type="button" hidden>Approve revision</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <button id="selection-action" class="selection-action" type="button" hidden>Add comment</button>
+
+  <dialog id="manual-dialog" class="manual-dialog">
+    <form method="dialog" class="dialog-shell">
+      <div class="dialog-header">
+        <div>
+          <div class="eyebrow">Create new immutable revision</div>
+          <h2>Edit Markdown manually</h2>
+        </div>
+        <button id="close-manual" class="icon-button" value="cancel" aria-label="Close">×</button>
+      </div>
+      <p>The current revision stays unchanged. Saving creates the next revision and resolves its open feedback as MANUAL.</p>
+      <textarea id="manual-content" class="manual-content" spellcheck="false"></textarea>
+      <div class="dialog-actions">
+        <button class="button ghost" value="cancel">Cancel</button>
+        <button id="save-manual" class="button primary" type="button">Save new revision</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script type="module" src="/review-assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,223 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="1250" viewBox="0 0 2000 1250">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#08101f"/>
+      <stop offset="0.55" stop-color="#0c1830"/>
+      <stop offset="1" stop-color="#101d35"/>
+    </linearGradient>
+    <linearGradient id="plane" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2457d6"/>
+      <stop offset="1" stop-color="#5d3bd9"/>
+    </linearGradient>
+    <linearGradient id="engine" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#0d8275"/>
+      <stop offset="1" stop-color="#0d647e"/>
+    </linearGradient>
+    <linearGradient id="artifact" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#173b54"/>
+      <stop offset="1" stop-color="#102a40"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#000814" flood-opacity="0.36"/>
+    </filter>
+    <marker id="arrowBlue" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#71a7ff"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#55ddc8"/>
+    </marker>
+    <marker id="arrowAmber" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#f7c65c"/>
+    </marker>
+    <style>
+      text { font-family: Inter, "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif; }
+      .title { fill:#f6f8ff; font-size:44px; font-weight:700; letter-spacing:-0.8px; }
+      .subtitle { fill:#9db0d0; font-size:20px; }
+      .band-title { fill:#ffffff; font-size:25px; font-weight:700; }
+      .band-sub { fill:#dbe6ff; font-size:16px; }
+      .section { fill:#f3f7ff; font-size:21px; font-weight:700; }
+      .label { fill:#f4f7ff; font-size:17px; font-weight:600; }
+      .small { fill:#b4c2da; font-size:14px; }
+      .tiny { fill:#91a3c1; font-size:12px; }
+      .mono { fill:#d9e6ff; font-size:14px; font-family:"SFMono-Regular", Menlo, Consolas, monospace; }
+      .node { fill:#14243d; stroke:#304a70; stroke-width:1.5; }
+      .node-green { fill:#12383b; stroke:#2e857e; stroke-width:1.5; }
+      .node-amber { fill:#3d321b; stroke:#8f7332; stroke-width:1.5; }
+      .node-purple { fill:#292444; stroke:#655ba1; stroke-width:1.5; }
+      .ghost { fill:#0c1729; stroke:#253754; stroke-width:1.2; }
+      .divider { stroke:#283b5b; stroke-width:1; }
+    </style>
+  </defs>
+
+  <rect width="2000" height="1250" fill="url(#bg)"/>
+  <circle cx="1780" cy="75" r="245" fill="#284a91" opacity="0.10"/>
+  <circle cx="126" cy="1120" r="290" fill="#0b8a75" opacity="0.08"/>
+
+  <text x="80" y="72" class="title">ENZO · State-Driven Delivery Orchestrator · V0</text>
+  <text x="80" y="107" class="subtitle">A dual-plane, state-driven workflow: agents produce; deterministic orchestration controls; humans approve.</text>
+  <rect x="1640" y="49" width="280" height="42" rx="21" fill="#182a46" stroke="#35537f"/>
+  <circle cx="1670" cy="70" r="7" fill="#55ddc8"/>
+  <text x="1690" y="76" class="small">HUMAN GATES ARE EXPLICIT</text>
+
+  <!-- Plane / human control plane -->
+  <g filter="url(#shadow)">
+    <rect x="80" y="145" width="1840" height="190" rx="24" fill="url(#plane)"/>
+  </g>
+  <text x="120" y="190" class="band-title">PLANE · Human Control Plane</text>
+  <text x="120" y="217" class="band-sub">项目、Feature 可见状态、评审入口、反馈与通知</text>
+
+  <g>
+    <rect x="120" y="242" width="380" height="66" rx="14" fill="#ffffff" opacity="0.13"/>
+    <text x="145" y="271" class="label">Feature #123 · Carrier Filter</text>
+    <text x="145" y="295" class="band-sub">Stage: SPEC · revision 3</text>
+
+    <rect x="530" y="242" width="334" height="66" rx="14" fill="#ffffff" opacity="0.13"/>
+    <circle cx="558" cy="275" r="8" fill="#ffd56a"/>
+    <text x="579" y="272" class="label">NEEDS YOUR REVIEW</text>
+    <text x="579" y="296" class="band-sub">2 feedback items addressed</text>
+
+    <rect x="894" y="242" width="455" height="66" rx="14" fill="#ffffff" opacity="0.13"/>
+    <rect x="919" y="257" width="123" height="37" rx="9" fill="#d9ffe9"/>
+    <text x="950" y="282" font-family="Inter, sans-serif" font-size="15" font-weight="700" fill="#0d6045">Approve</text>
+    <rect x="1057" y="257" width="200" height="37" rx="9" fill="#ffe4d8"/>
+    <text x="1081" y="282" font-family="Inter, sans-serif" font-size="15" font-weight="700" fill="#80321c">Request Changes</text>
+    <text x="1275" y="282" class="band-sub">+ feedback</text>
+
+    <rect x="1379" y="242" width="501" height="66" rx="14" fill="#ffffff" opacity="0.13"/>
+    <text x="1404" y="271" class="label">Projection, not workflow truth</text>
+    <text x="1404" y="295" class="band-sub">Plane reflects orchestrator state via outbox</text>
+  </g>
+
+  <!-- Dual-plane message boundary -->
+  <path d="M620 335 L620 397" stroke="#71a7ff" stroke-width="4" marker-end="url(#arrowBlue)"/>
+  <text x="365" y="374" class="small">webhooks · review decisions · comments</text>
+  <path d="M1390 397 L1390 335" stroke="#55ddc8" stroke-width="4" marker-end="url(#arrowGreen)"/>
+  <text x="1430" y="374" class="small">outbox: stage · links · notices</text>
+
+  <!-- Orchestrator band -->
+  <g filter="url(#shadow)">
+    <rect x="80" y="410" width="1840" height="730" rx="24" fill="#0e1c31" stroke="#294364" stroke-width="2"/>
+  </g>
+  <rect x="80" y="410" width="1840" height="73" rx="24" fill="url(#engine)"/>
+  <path d="M80 459 Q80 483 104 483 H1896 Q1920 483 1920 459 V483 H80 Z" fill="url(#engine)"/>
+  <text x="120" y="454" class="band-title">ENZO · Automation &amp; Execution Plane</text>
+  <text x="1505" y="453" class="band-sub">SQLite + filesystem · one app + one worker</text>
+
+  <!-- Deterministic event/action spine -->
+  <text x="120" y="528" class="section">Deterministic control spine</text>
+  <g>
+    <rect x="120" y="553" width="245" height="82" rx="14" class="node"/>
+    <text x="146" y="584" class="label">FastAPI ingress</text>
+    <text x="146" y="610" class="small">raw webhook + HMAC</text>
+
+    <path d="M365 594 H416" stroke="#71a7ff" stroke-width="3" marker-end="url(#arrowBlue)"/>
+    <rect x="430" y="553" width="250" height="82" rx="14" class="node"/>
+    <text x="456" y="584" class="label">Inbox + dedupe</text>
+    <text x="456" y="610" class="small">X-Plane-Delivery</text>
+
+    <path d="M680 594 H731" stroke="#71a7ff" stroke-width="3" marker-end="url(#arrowBlue)"/>
+    <rect x="745" y="538" width="300" height="112" rx="16" class="node-green"/>
+    <text x="774" y="576" class="label">State machine</text>
+    <text x="774" y="601" class="small">STATE / EVENT → ACTION</text>
+    <text x="774" y="625" class="small">feature.version + current revision</text>
+
+    <path d="M1045 594 H1096" stroke="#55ddc8" stroke-width="3" marker-end="url(#arrowGreen)"/>
+    <rect x="1110" y="553" width="250" height="82" rx="14" class="node"/>
+    <text x="1136" y="584" class="label">Durable jobs</text>
+    <text x="1136" y="610" class="small">lease + attempt fencing</text>
+
+    <path d="M1360 594 H1411" stroke="#71a7ff" stroke-width="3" marker-end="url(#arrowBlue)"/>
+    <rect x="1425" y="553" width="205" height="82" rx="14" class="node-purple"/>
+    <text x="1452" y="584" class="label">AgentRunner</text>
+    <text x="1452" y="610" class="small">worker, not owner</text>
+
+    <path d="M1630 594 H1681" stroke="#71a7ff" stroke-width="3" marker-end="url(#arrowBlue)"/>
+    <rect x="1695" y="553" width="185" height="82" rx="14" class="node"/>
+    <text x="1720" y="584" class="label">Outbox</text>
+    <text x="1720" y="610" class="small">retry projection</text>
+  </g>
+
+  <line x1="120" y1="683" x2="1880" y2="683" class="divider"/>
+
+  <!-- Review primitive -->
+  <text x="120" y="728" class="section">Reusable artifact review primitive</text>
+  <text x="120" y="753" class="small">The same loop powers INTENT, SPEC and PLAN; each update creates an immutable revision.</text>
+
+  <g>
+    <rect x="120" y="785" width="170" height="75" rx="14" class="node-green"/>
+    <text x="153" y="816" class="label">GENERATE</text>
+    <text x="151" y="842" class="mono">revision N</text>
+    <path d="M290 822 H331" stroke="#55ddc8" stroke-width="3" marker-end="url(#arrowGreen)"/>
+
+    <rect x="345" y="785" width="150" height="75" rx="14" class="node"/>
+    <text x="390" y="816" class="label">DRAFT</text>
+    <text x="376" y="842" class="small">artifact.md</text>
+    <path d="M495 822 H536" stroke="#71a7ff" stroke-width="3" marker-end="url(#arrowBlue)"/>
+
+    <rect x="550" y="775" width="220" height="95" rx="16" class="node-amber"/>
+    <text x="579" y="812" class="label">HUMAN REVIEW</text>
+    <text x="590" y="838" class="small">explicit decision gate</text>
+
+    <path d="M770 802 H817" stroke="#55ddc8" stroke-width="3" marker-end="url(#arrowGreen)"/>
+    <text x="783" y="785" class="tiny">APPROVE</text>
+    <rect x="830" y="765" width="190" height="75" rx="14" class="node-green"/>
+    <text x="869" y="796" class="label">APPROVED</text>
+    <text x="863" y="822" class="small">next SDLC stage</text>
+
+    <path d="M660 870 V921" stroke="#f7c65c" stroke-width="3" marker-end="url(#arrowAmber)"/>
+    <text x="678" y="901" class="tiny">REQUEST CHANGES</text>
+    <rect x="508" y="935" width="304" height="82" rx="14" class="node-amber"/>
+    <text x="538" y="968" class="label">FeedbackItem[]</text>
+    <text x="538" y="994" class="small">OPEN · section · comment · reviewer</text>
+
+    <path d="M508 976 H458" stroke="#f7c65c" stroke-width="3" marker-end="url(#arrowAmber)"/>
+    <rect x="205" y="935" width="240" height="82" rx="14" class="node-purple"/>
+    <text x="233" y="968" class="label">Manual / Agent update</text>
+    <text x="233" y="994" class="small">explicit feedback as context</text>
+    <path d="M325 935 C325 895 420 895 420 861" fill="none" stroke="#f7c65c" stroke-width="3" marker-end="url(#arrowAmber)"/>
+    <text x="340" y="905" class="tiny">new revision N+1</text>
+  </g>
+
+  <!-- Implementation lane -->
+  <rect x="1080" y="728" width="800" height="335" rx="18" fill="#0b1729" stroke="#2d4568"/>
+  <text x="1115" y="770" class="section">Implementation &amp; independent evidence</text>
+  <text x="1115" y="797" class="small">Git lifecycle is application-owned; the coding model never manages worktrees.</text>
+
+  <g>
+    <rect x="1115" y="830" width="200" height="76" rx="13" class="node"/>
+    <text x="1144" y="860" class="label">Project binding</text>
+    <text x="1144" y="885" class="small">repo + commands</text>
+    <path d="M1315 868 H1350" stroke="#71a7ff" stroke-width="3" marker-end="url(#arrowBlue)"/>
+    <rect x="1362" y="830" width="214" height="76" rx="13" class="node"/>
+    <text x="1389" y="860" class="label">Branch + worktree</text>
+    <text x="1389" y="885" class="small">base SHA · attempt</text>
+    <path d="M1576 868 H1611" stroke="#71a7ff" stroke-width="3" marker-end="url(#arrowBlue)"/>
+    <rect x="1623" y="830" width="220" height="76" rx="13" class="node-purple"/>
+    <text x="1661" y="860" class="label">Coding Agent</text>
+    <text x="1653" y="885" class="small">same worktree on retry</text>
+
+    <path d="M1733 906 V938" stroke="#55ddc8" stroke-width="3" marker-end="url(#arrowGreen)"/>
+    <rect x="1570" y="950" width="273" height="76" rx="13" class="node-green"/>
+    <text x="1600" y="980" class="label">lint · test · build</text>
+    <text x="1600" y="1005" class="small">verification evidence + SHA</text>
+    <path d="M1570 988 H1535" stroke="#55ddc8" stroke-width="3" marker-end="url(#arrowGreen)"/>
+    <rect x="1300" y="950" width="223" height="76" rx="13" class="node-amber"/>
+    <text x="1332" y="980" class="label">Human review</text>
+    <text x="1332" y="1005" class="small">diff + evidence</text>
+    <path d="M1300 988 H1265" stroke="#55ddc8" stroke-width="3" marker-end="url(#arrowGreen)"/>
+    <rect x="1115" y="950" width="138" height="76" rx="13" class="node-green"/>
+    <text x="1150" y="980" class="label">DONE</text>
+    <text x="1135" y="1005" class="small">close + cleanup</text>
+  </g>
+
+  <!-- bottom lifecycle / stores -->
+  <text x="120" y="1102" class="small">Feature stage</text>
+  <text x="230" y="1102" class="mono">IDEA → INTENT → SPEC → PLAN → IMPLEMENTATION → VERIFICATION → DONE</text>
+
+  <rect x="80" y="1170" width="570" height="46" rx="12" class="ghost"/>
+  <text x="108" y="1199" class="small">SQLite: state, reviews, feedback, jobs, inbox/outbox, executions</text>
+  <rect x="675" y="1170" width="500" height="46" rx="12" class="ghost"/>
+  <text x="703" y="1199" class="small">Filesystem: immutable Markdown revisions, logs, diffs, evidence</text>
+  <rect x="1200" y="1170" width="720" height="46" rx="12" class="ghost"/>
+  <text x="1228" y="1199" class="small">Race safety: unique idempotency keys · optimistic version · lease fencing · expected revision</text>
+</svg>
