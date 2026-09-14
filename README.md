@@ -68,38 +68,32 @@ failed execution keeps its worktree and evidence for inspection.
 
 See [ARCHITECTURE_PROPOSAL.md](ARCHITECTURE_PROPOSAL.md) for the wider V0 architecture.
 
-## Development
+## Quick start
+
+The default setup uses FakePlane and FakeAgent, so it needs no credentials,
+Docker, or environment file:
 
 ```bash
+git clone https://github.com/preservedrdeveloper/enzo-orchestrator.git
+cd enzo-orchestrator
 python3 -m venv .venv
 .venv/bin/pip install '.[dev]'
+.venv/bin/enzo
+```
+
+Open <http://127.0.0.1:8000/docs>. Create a feature with `POST /fake/features`,
+then process its pending work with `POST /worker/drain`. Runtime data goes to
+the ignored `var/` directory.
+
+Run the test suite with:
+
+```bash
 .venv/bin/pytest
 ```
 
-Tests declare `src` as their import path, so normal source/test iteration does
-not require reinstalling the package.
-
-Run the prototype API:
-
-```bash
-set -a
-source .env.local
-set +a
-PYTHONPATH=src .venv/bin/python -m uvicorn enzo.web:app --host 127.0.0.1 --port 8000
-```
-
-Run the worker in a second terminal with the same environment:
-
-```bash
-set -a
-source .env.local
-set +a
-PYTHONPATH=src .venv/bin/python -m enzo.worker
-```
-
-Installed `enzo` and `enzo-worker` console scripts are also provided.
-
-Runtime data is stored under `var/` by default.
+Real Plane, Pi, and Git execution are opt-in. Configure them only when needed
+using [.env.example](.env.example); the disposable Plane fixture lives in
+[dev/README.md](dev/README.md).
 
 ## Repository execution
 
