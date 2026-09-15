@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -518,6 +519,55 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
 )
 
 
+class DatabaseMigrationError(RuntimeError):
+    """Raised when a recorded or pending schema migration cannot be made consistent."""
+
+
+_AGENT_RUN_PROVENANCE_COLUMNS = {
+    "workload": "TEXT",
+    "runner_name": "TEXT",
+    "runner_kind": "TEXT",
+    "provider": "TEXT",
+    "model": "TEXT",
+    "result_json": "TEXT",
+    "failure_kind": "TEXT",
+    "retryable": "INTEGER CHECK (retryable IN (0, 1))",
+}
+
+_REQUIRED_TABLES_BY_MIGRATION = {
+    1: {
+        "features",
+        "artifacts",
+        "artifact_revisions",
+        "reviews",
+        "feedback_items",
+        "agent_runs",
+        "inbox_events",
+        "jobs",
+        "outbox_messages",
+        "domain_events",
+    },
+    3: {"execution_plans", "execution_tasks"},
+    4: {"projects", "executions", "verification_evidence"},
+    5: {
+        "implementation_revisions",
+        "implementation_reviews",
+        "implementation_feedback_items",
+    },
+}
+
+_REQUIRED_COLUMNS_BY_MIGRATION = {
+    4: {"features": {"project_id"}},
+    5: {
+        "projects": {"cleanup_on_done"},
+        "executions": {"current_revision_id"},
+        "verification_evidence": {"implementation_revision_id"},
+    },
+    6: {"agent_runs": set(_AGENT_RUN_PROVENANCE_COLUMNS)},
+    7: {"feedback_items": {"location_json"}},
+}
+
+
 class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -537,24 +587,61 @@ class Database:
 
     def initialize(self) -> None:
         with self.connect() as connection:
-            connection.execute("PRAGMA journal_mode = WAL")
+            _enable_wal(connection)
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS schema_migrations (
                        version INTEGER PRIMARY KEY,
                        applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                    )"""
             )
-            applied = {
-                row["version"]
-                for row in connection.execute("SELECT version FROM schema_migrations").fetchall()
-            }
-            for version, script in MIGRATIONS:
-                if version in applied:
-                    continue
-                connection.executescript(script)
+            # Some migrations rebuild referenced tables, so foreign-key enforcement
+            # must be disabled before their transaction begins. Every migration
+            # performs an explicit foreign_key_check before it commits.
+            connection.execute("PRAGMA foreign_keys = OFF")
+            try:
+                for version, script in MIGRATIONS:
+                    self._apply_migration(connection, version, script)
+            finally:
+                if connection.in_transaction:
+                    connection.rollback()
+                connection.execute("PRAGMA foreign_keys = ON")
+
+    def _apply_migration(
+        self, connection: sqlite3.Connection, version: int, script: str
+    ) -> None:
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            applied = connection.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = ?", (version,)
+            ).fetchone()
+            if version == 6:
+                _ensure_columns(connection, "agent_runs", _AGENT_RUN_PROVENANCE_COLUMNS)
+            elif version == 7:
+                _ensure_columns(connection, "feedback_items", {"location_json": "TEXT"})
+                connection.execute(
+                    """CREATE INDEX IF NOT EXISTS feedback_by_revision_status
+                       ON feedback_items(artifact_revision_id, status, source_ordinal)"""
+                )
+            elif not applied:
+                _execute_sql_script(connection, script)
+
+            _validate_migration_shape(connection, version)
+            violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise DatabaseMigrationError(
+                    f"migration {version} would leave {len(violations)} foreign-key violation(s)"
+                )
+            if not applied:
                 connection.execute(
                     "INSERT INTO schema_migrations (version) VALUES (?)", (version,)
                 )
+            connection.commit()
+        except DatabaseMigrationError:
+            connection.rollback()
+            raise
+        except sqlite3.Error as error:
+            connection.rollback()
+            raise DatabaseMigrationError(f"migration {version} failed: {error}") from error
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -576,3 +663,77 @@ class Database:
             yield connection
         finally:
             connection.close()
+
+
+def _execute_sql_script(connection: sqlite3.Connection, script: str) -> None:
+    """Execute one checked-in migration without sqlite3.executescript auto-commits."""
+
+    script = script.replace("PRAGMA foreign_keys = OFF;", "").replace(
+        "PRAGMA foreign_keys = ON;", ""
+    )
+    pending = ""
+    for line in script.splitlines(keepends=True):
+        pending += line
+        if not sqlite3.complete_statement(pending):
+            continue
+        statement = pending.strip()
+        pending = ""
+        if statement:
+            connection.execute(statement)
+    if pending.strip():
+        raise DatabaseMigrationError("migration contains an incomplete SQL statement")
+
+
+def _enable_wal(connection: sqlite3.Connection, *, timeout_seconds: float = 30) -> None:
+    """Set WAL mode, retrying the lock race between concurrent process startups."""
+
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            connection.execute("PRAGMA journal_mode = WAL")
+            return
+        except sqlite3.OperationalError as error:
+            if "locked" not in str(error).lower() or time.monotonic() >= deadline:
+                raise DatabaseMigrationError(f"could not enable SQLite WAL mode: {error}") from error
+            time.sleep(0.05)
+
+
+def _ensure_columns(
+    connection: sqlite3.Connection, table: str, definitions: dict[str, str]
+) -> None:
+    existing = {
+        row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    if not existing:
+        raise DatabaseMigrationError(f"required table is missing: {table}")
+    for name, definition in definitions.items():
+        if name not in existing:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+
+def _validate_migration_shape(connection: sqlite3.Connection, version: int) -> None:
+    required_tables = _REQUIRED_TABLES_BY_MIGRATION.get(version, set())
+    existing_tables = {
+        row["name"]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    missing_tables = sorted(required_tables - existing_tables)
+    if missing_tables:
+        raise DatabaseMigrationError(
+            f"migration {version} is recorded but required tables are missing: "
+            + ", ".join(missing_tables)
+        )
+
+    for table, required_columns in _REQUIRED_COLUMNS_BY_MIGRATION.get(version, {}).items():
+        existing_columns = {
+            row["name"]
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        missing_columns = sorted(required_columns - existing_columns)
+        if missing_columns:
+            raise DatabaseMigrationError(
+                f"migration {version} is recorded but {table} is missing columns: "
+                + ", ".join(missing_columns)
+            )

@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+
+import enzo.database as database_module
 from enzo.database import (
     ADD_PLAN_ARTIFACT_AND_EXECUTION_BREAKDOWN,
     ADD_PROJECT_REPOSITORY_AND_EXECUTIONS,
     EXPAND_ARTIFACT_TYPES,
     SCHEMA,
     Database,
+    DatabaseMigrationError,
 )
 
 
@@ -173,3 +178,80 @@ def test_v4_succeeded_execution_is_migrated_to_an_explicit_review_gate(tmp_path)
             """SELECT count(*) FROM sqlite_master
                WHERE type = 'table' AND name = 'implementation_revisions'"""
         ).fetchone()[0] == 1
+
+
+def test_recorded_partial_agent_provenance_migration_is_repaired(tmp_path) -> None:
+    path = tmp_path / "partial-v6.db"
+    database = Database(path)
+    database.initialize()
+
+    with database.transaction() as connection:
+        connection.execute("ALTER TABLE agent_runs DROP COLUMN result_json")
+        connection.execute("ALTER TABLE agent_runs DROP COLUMN failure_kind")
+        connection.execute("ALTER TABLE agent_runs DROP COLUMN retryable")
+
+    database.initialize()
+
+    with database.read() as repaired:
+        columns = {
+            row["name"] for row in repaired.execute("PRAGMA table_info(agent_runs)")
+        }
+        assert {"result_json", "failure_kind", "retryable"} <= columns
+        assert repaired.execute(
+            "SELECT count(*) FROM schema_migrations WHERE version = 6"
+        ).fetchone()[0] == 1
+
+
+def test_failed_migration_rolls_back_schema_and_ledger(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "failed.db"
+    monkeypatch.setattr(
+        database_module,
+        "MIGRATIONS",
+        ((99, "CREATE TABLE partial_table (id TEXT);\nTHIS IS NOT SQL;"),),
+    )
+
+    with pytest.raises(DatabaseMigrationError, match="migration 99 failed"):
+        Database(path).initialize()
+
+    connection = sqlite3.connect(path)
+    try:
+        assert connection.execute(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'partial_table'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT count(*) FROM schema_migrations WHERE version = 99"
+        ).fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+def test_recorded_but_incomplete_non_additive_migration_fails_at_startup(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "incomplete.db"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT)"
+    )
+    connection.execute(
+        "INSERT INTO schema_migrations (version, applied_at) VALUES (1, 'now')"
+    )
+    connection.commit()
+    connection.close()
+    monkeypatch.setattr(database_module, "MIGRATIONS", ((1, SCHEMA),))
+
+    with pytest.raises(DatabaseMigrationError, match="required tables are missing"):
+        Database(path).initialize()
+
+
+def test_concurrent_initializers_apply_each_migration_once(tmp_path) -> None:
+    path = tmp_path / "concurrent.db"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(lambda _: Database(path).initialize(), range(2)))
+
+    with Database(path).read() as connection:
+        versions = connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall()
+        assert [row["version"] for row in versions] == [1, 2, 3, 4, 5, 6, 7]
