@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation review · Enzo</title>
+  <link rel="stylesheet" href="/review-assets/styles.css">
+  <link rel="stylesheet" href="/review-assets/implementation.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand" aria-label="Enzo implementation review workspace">
+      <span class="brand-mark" aria-hidden="true">E</span>
+      <span>Enzo</span>
+    </div>
+    <div class="header-context">
+      <span id="feature-key">Loading…</span>
+      <span class="separator" aria-hidden="true">/</span>
+      <strong id="feature-title">Implementation review</strong>
+    </div>
+    <div class="header-actions">
+      <button id="back-to-plane" class="back-link" type="button" hidden>← Back to Plane</button>
+      <div class="reviewer" title="V0 local reviewer identity">
+        <span class="presence" aria-hidden="true"></span>
+        <span id="reviewer-id">reviewer</span>
+      </div>
+    </div>
+  </header>
+
+  <section class="stage-strip" aria-label="Feature lifecycle">
+    <div id="stage-track" class="stage-track"></div>
+  </section>
+
+  <main class="workspace implementation-workspace">
+    <article class="document-panel">
+      <header class="document-header">
+        <div>
+          <div class="eyebrow">Implementation review</div>
+          <h1 id="implementation-title">Implementation · revision —</h1>
+        </div>
+        <div class="document-meta">
+          <span id="status-chip" class="status-chip">LOADING</span>
+          <span id="head-sha" class="hash">commit pending</span>
+        </div>
+      </header>
+
+      <div class="execution-meta" aria-label="Execution metadata">
+        <div><span>Execution</span><strong id="execution-status">—</strong></div>
+        <div><span>Branch</span><code id="branch">—</code></div>
+        <div><span>Base</span><code id="base-sha">—</code></div>
+        <div><span>Agent</span><strong id="agent">—</strong></div>
+      </div>
+
+      <div class="selection-hint">
+        <strong id="review-objective">Review independently produced evidence.</strong>
+        <span id="review-guidance">Confirm the diff satisfies the approved plan and verification contract.</span>
+      </div>
+
+      <div class="view-toolbar">
+        <div class="view-tabs" role="tablist" aria-label="Implementation view">
+          <button id="view-overview" class="view-tab active" type="button" role="tab"
+                  aria-selected="true" aria-controls="implementation-overview">Overview</button>
+          <button id="view-patch" class="view-tab" type="button" role="tab"
+                  aria-selected="false" aria-controls="implementation-patch">Patch</button>
+          <button id="view-evidence" class="view-tab" type="button" role="tab"
+                  aria-selected="false" aria-controls="implementation-evidence">Evidence</button>
+        </div>
+        <span id="diff-summary" class="diff-summary">Diff pending</span>
+      </div>
+
+      <section id="implementation-overview" class="implementation-view" role="tabpanel"
+               aria-labelledby="view-overview" tabindex="0">
+        <div class="review-readiness">
+          <div>
+            <span class="readiness-label">Deterministic checks</span>
+            <strong id="checks-summary">Pending</strong>
+          </div>
+          <div>
+            <span class="readiness-label">Changed files</span>
+            <strong id="changed-files-count">—</strong>
+          </div>
+          <div>
+            <span class="readiness-label">Worktree</span>
+            <strong id="worktree-state">—</strong>
+          </div>
+        </div>
+        <section class="overview-section">
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">Review order</span>
+              <h2>Changed files</h2>
+            </div>
+            <button id="open-patch" class="button secondary" type="button">Open full patch</button>
+          </div>
+          <div id="changed-files" class="changed-files"></div>
+        </section>
+        <section class="overview-section">
+          <span class="eyebrow">Agent provenance</span>
+          <h2>What produced this revision</h2>
+          <div id="agent-summary" class="agent-summary"></div>
+        </section>
+      </section>
+
+      <section id="implementation-patch" class="implementation-view patch-view" role="tabpanel"
+               aria-labelledby="view-patch" tabindex="0" hidden>
+        <div id="patch-content" class="patch-content"></div>
+      </section>
+
+      <section id="implementation-evidence" class="implementation-view evidence-view" role="tabpanel"
+               aria-labelledby="view-evidence" tabindex="0" hidden>
+        <div id="evidence-list" class="evidence-list"></div>
+      </section>
+
+      <footer class="revision-footer">
+        <span>Immutable implementation history</span>
+        <nav id="revision-history" aria-label="Implementation revisions"></nav>
+      </footer>
+    </article>
+
+    <aside class="review-panel" aria-label="Human implementation review gate">
+      <header class="review-panel-header">
+        <div>
+          <div class="eyebrow">Human gate</div>
+          <h2>Review feedback</h2>
+        </div>
+        <div class="feedback-heading-actions">
+          <button id="new-feedback" class="button secondary compact-button" type="button" hidden>Add</button>
+          <span id="feedback-count" class="count">0</span>
+        </div>
+      </header>
+
+      <section id="composer" class="composer" hidden>
+        <div class="composer-label">New implementation feedback</div>
+        <label>
+          Area or file
+          <input id="feedback-section" maxlength="200" placeholder="e.g. src/search.py or Tests">
+        </label>
+        <label>
+          Feedback
+          <textarea id="feedback-comment" rows="5" maxlength="10000"
+                    placeholder="Describe the observable change required."></textarea>
+        </label>
+        <div class="composer-actions">
+          <button id="cancel-comment" class="button ghost" type="button">Cancel</button>
+          <button id="add-comment" class="button primary" type="button">Add feedback</button>
+        </div>
+      </section>
+
+      <div id="feedback-list" class="feedback-list"></div>
+      <div id="empty-feedback" class="empty-state">
+        <span class="empty-icon" aria-hidden="true">⌁</span>
+        <strong id="empty-feedback-title">No feedback yet</strong>
+        <span id="empty-feedback-copy">Review the patch and verification evidence first.</span>
+      </div>
+
+      <section id="resolved-feedback-section" class="resolved-feedback-section" hidden>
+        <div class="resolved-feedback-heading">
+          <strong>Addressed in this revision</strong>
+          <span id="resolved-feedback-count" class="count">0</span>
+        </div>
+        <div id="resolved-feedback-list" class="feedback-list resolved"></div>
+      </section>
+
+      <div class="decision-bar">
+        <p id="decision-help">Loading available actions…</p>
+        <div class="decision-actions">
+          <button id="address-agent" class="button secondary" type="button" hidden>Address with Agent</button>
+          <button id="request-changes" class="button danger" type="button" hidden>Request changes</button>
+          <button id="approve" class="button approve" type="button" hidden>Approve revision</button>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="/review-assets/implementation.js"></script>
+</body>
+</html>

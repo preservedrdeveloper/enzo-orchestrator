@@ -234,6 +234,16 @@ the source view without changing orchestration semantics. The page also
 feature-detects the proposed WebMCP browser API and, where supported, exposes
 one read tool and one review-action tool over the same endpoints.
 
+Implementation review links open a second focused workspace at
+`/executions/<execution-id>`. It presents the exact implementation revision,
+changed-file summary, full Git patch, per-revision lint/test/build evidence,
+runner provenance, structured feedback, and immutable implementation history.
+Approve, Request changes, and Address with Agent enter the same implementation
+review state machine used by Plane comments. Every browser command targets the
+exact visible revision, so concurrent or stale decisions are rejected rather
+than applied to a newer commit. An agent revision keeps the same worktree and
+the page refreshes automatically while coding and verification run.
+
 The review surface currently has no login flow. In Fake mode it acts as
 `ENZO_REVIEW_UI_ACTOR_ID`, or the first configured reviewer when that variable
 is unset. In Plane mode, mutations are disabled unless

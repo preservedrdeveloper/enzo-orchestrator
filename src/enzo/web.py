@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import html
 import os
 import uuid
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -154,75 +152,6 @@ def create_app(container: Container | None = None) -> FastAPI:
             external_feature_id, artifact_type
         )
         return snapshot
-
-    @application.get("/executions/{execution_id}", response_class=HTMLResponse)
-    def execution(execution_id: str) -> HTMLResponse:
-        detail = services.orchestrator.execution_detail(execution_id)
-        if not detail:
-            raise HTTPException(status_code=404, detail="Execution not found")
-        revision_numbers = {
-            revision["id"]: revision["revision_no"]
-            for revision in detail["implementation_revisions"]
-        }
-        evidence = "".join(
-            "<section>"
-            f"<h3>Revision {revision_numbers.get(item['implementation_revision_id'], '—')} · "
-            f"{html.escape(item['name'])}: {html.escape(item['status'])}</h3>"
-            f"<pre>{html.escape(item['log'])}</pre>"
-            "</section>"
-            for item in detail["evidence"]
-        ) or "<p>No verification evidence has been recorded yet.</p>"
-        revisions = "".join(
-            "<section>"
-            f"<h2>Implementation revision {revision['revision_no']} · "
-            f"{html.escape(revision['status'])}</h2>"
-            f"<p>Head SHA: {html.escape(revision['head_sha'] or 'pending')}</p>"
-            f"<pre>{html.escape(revision['diff'] or 'Diff is not available.')}</pre>"
-            + (
-                "<h3>Feedback</h3><ul>"
-                + "".join(
-                    f"<li><strong>{html.escape(item['section'] or 'General')}</strong>: "
-                    f"{html.escape(item['comment'])} — {html.escape(item['status'])}</li>"
-                    for item in revision["feedback"]
-                )
-                + "</ul>"
-                if revision["feedback"]
-                else ""
-            )
-            + "</section>"
-            for revision in detail["implementation_revisions"]
-        )
-        diff_stat = html.escape(str(detail["result"].get("diff_stat") or "Pending"))
-        body = f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Implementation · {html.escape(detail['external_id'])}</title>
-  <style>
-    body {{ margin: 0 auto; max-width: 960px; padding: 2rem; color: #18212f;
-            background: #f7f8fa; font: 16px/1.55 system-ui, sans-serif; }}
-    .meta {{ display: grid; grid-template-columns: max-content 1fr; gap: .4rem 1rem;
-             color: #52606d; }}
-    pre {{ padding: 1.25rem; overflow: auto; background: white; border: 1px solid #dfe3e8;
-           border-radius: 10px; white-space: pre-wrap; }}
-    section {{ margin-top: 2rem; }}
-  </style>
-</head>
-<body>
-  <h1>Implementation · {html.escape(detail['external_id'])}</h1>
-  <div class="meta">
-    <strong>Status</strong><span>{html.escape(detail['status'])}</span>
-    <strong>Branch</strong><span>{html.escape(detail['branch'] or 'pending')}</span>
-    <strong>Base SHA</strong><span>{html.escape(detail['base_sha'] or 'pending')}</span>
-    <strong>Head SHA</strong><span>{html.escape(detail['head_sha'] or 'pending')}</span>
-  </div>
-  <section><h2>Diff summary</h2><pre>{diff_stat}</pre></section>
-  {revisions}
-  <section><h2>Verification evidence</h2>{evidence}</section>
-</body>
-</html>"""
-        return HTMLResponse(body)
 
     return application
 

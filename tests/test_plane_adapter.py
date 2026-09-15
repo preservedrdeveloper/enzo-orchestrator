@@ -160,6 +160,7 @@ def test_implementation_review_notice_links_external_evidence() -> None:
     payload = json.loads(requests[0].content)
     assert "IMPLEMENTATION READY FOR REVIEW" in payload["comment_html"]
     assert "http://enzo.test/executions/execution-1" in payload["comment_html"]
+    assert "Open implementation review" in payload["comment_html"]
     assert "ai/work-item-1" in payload["comment_html"]
     assert "@enzo approve implementation@1" in payload["comment_html"]
     assert "@enzo request-changes implementation@1" in payload["comment_html"]

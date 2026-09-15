@@ -4,6 +4,7 @@ import asyncio
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -133,9 +134,23 @@ def test_repository_bound_execution_creates_worktree_evidence_commit_and_push(
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get(f"/executions/{execution['id']}")
             assert response.status_code == 200
-            assert "Implementation · PLANE-EXEC-1" in response.text
-            assert "lint: PASS" in response.text
-            assert "Diff summary" in response.text
+            assert "Implementation review" in response.text
+            assert "Changed files" in response.text
+            assert "/review-assets/implementation.js" in response.text
+            detail = (await client.get(f"/api/executions/{execution['id']}")).json()
+            assert detail["external_id"] == "PLANE-EXEC-1"
+            assert detail["feature_stage"] == "VERIFICATION"
+            assert detail["review_write_enabled"] is True
+            assert detail["worktree_present"] is True
+            assert "worktree_path" not in detail
+            assert [(item["name"], item["status"]) for item in detail["evidence"]] == [
+                ("lint", "PASS"),
+                ("test", "PASS"),
+                ("build", "PASS"),
+            ]
+            assert all("log_path" not in item for item in detail["evidence"])
+            assert "diff_path" not in detail["implementation_revisions"][0]
+            assert detail["implementation_revisions"][0]["diff"]
 
     asyncio.run(view_evidence())
 
@@ -381,3 +396,207 @@ def test_implementation_review_decision_race_has_one_winner(tmp_path: Path) -> N
                WHERE status IN ('APPROVED', 'CHANGES_REQUESTED')"""
         ).fetchone()[0]
         assert decisions == 1
+
+
+def test_implementation_review_surface_drives_feedback_revision_cycle(
+    tmp_path: Path,
+) -> None:
+    remote = _remote_repository(tmp_path / "git")
+    harness = make_harness(tmp_path / "enzo", project=_project(remote))
+    external_id = create_ready_plan(harness, external_id="PLANE-IMPL-WEB")
+    _approve_plan(harness, external_id)
+    harness.orchestrator.drain(max_steps=50)
+    first = harness.orchestrator.feature_snapshot(external_id)["execution"]
+    execution_id = first["id"]
+    revision_id = first["current_revision_id"]
+    container = Container(
+        database=harness.database,
+        artifact_store=harness.artifact_store,
+        agent_runner=harness.agent_runner,
+        task_manager=harness.plane,
+        orchestrator=harness.orchestrator,
+        project=harness.project,
+        execution_coordinator=harness.execution_coordinator,
+    )
+
+    async def scenario() -> None:
+        transport = httpx.ASGITransport(app=create_app(container))
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            request = {
+                "action": "REQUEST_CHANGES",
+                "request_id": "implementation-web:changes",
+                "feedback": [
+                    {
+                        "section": "enzo-implementation.txt",
+                        "comment": "Record the observable reviewed behavior.",
+                    },
+                    {
+                        "section": "Tests",
+                        "comment": "Keep all deterministic checks passing.",
+                    },
+                ],
+            }
+            blank = await client.post(
+                f"/api/implementation-revisions/{revision_id}/review-actions",
+                json={
+                    "action": "REQUEST_CHANGES",
+                    "request_id": "implementation-web:blank",
+                    "feedback": [{"section": "Tests", "comment": "   \n"}],
+                },
+            )
+            assert blank.status_code == 422
+            changed = await client.post(
+                f"/api/implementation-revisions/{revision_id}/review-actions",
+                json=request,
+            )
+            assert changed.status_code == 200
+            assert changed.json()["event"]["outcome"] == "APPLIED"
+
+            duplicate = await client.post(
+                f"/api/implementation-revisions/{revision_id}/review-actions",
+                json=request,
+            )
+            assert duplicate.status_code == 200
+            assert duplicate.json()["event"]["outcome"] == "DUPLICATE"
+
+            detail = (await client.get(f"/api/executions/{execution_id}")).json()
+            first_revision = detail["implementation_revisions"][0]
+            assert first_revision["status"] == "CHANGES_REQUESTED"
+            assert [item["section"] for item in first_revision["feedback"]] == [
+                "enzo-implementation.txt",
+                "Tests",
+            ]
+
+            addressed = await client.post(
+                f"/api/implementation-revisions/{revision_id}/review-actions",
+                json={
+                    "action": "ADDRESS_WITH_AGENT",
+                    "request_id": "implementation-web:address",
+                },
+            )
+            assert addressed.status_code == 200
+            updating_id = addressed.json()["execution"]["current_revision_id"]
+            assert updating_id != revision_id
+            assert "worktree_path" not in addressed.json()["execution"]
+            assert addressed.json()["execution"]["implementation_revisions"][-1][
+                "status"
+            ] == "UPDATING"
+
+            assert (await client.post("/worker/drain")).status_code == 200
+            revised = (await client.get(f"/api/executions/{execution_id}")).json()
+            current = revised["implementation_revisions"][-1]
+            assert current["id"] == updating_id
+            assert current["status"] == "REVIEW"
+            assert [item["resolution_type"] for item in current["resolved_feedback"]] == [
+                "AGENT",
+                "AGENT",
+            ]
+            assert {item["implementation_revision_id"] for item in current["resolved_feedback"]} == {
+                revision_id
+            }
+            evidence = [
+                item
+                for item in revised["evidence"]
+                if item["implementation_revision_id"] == updating_id
+            ]
+            assert [(item["name"], item["status"]) for item in evidence] == [
+                ("lint", "PASS"),
+                ("test", "PASS"),
+                ("build", "PASS"),
+            ]
+            stale = await client.post(
+                f"/api/implementation-revisions/{revision_id}/review-actions",
+                json={"action": "APPROVE", "request_id": "implementation-web:stale"},
+            )
+            assert stale.status_code == 409
+
+    asyncio.run(scenario())
+
+
+def test_implementation_review_surface_decision_race_has_one_winner(
+    tmp_path: Path,
+) -> None:
+    remote = _remote_repository(tmp_path / "git")
+    harness = make_harness(tmp_path / "enzo", project=_project(remote))
+    external_id = create_ready_plan(harness, external_id="PLANE-IMPL-WEB-RACE")
+    _approve_plan(harness, external_id)
+    harness.orchestrator.drain(max_steps=50)
+    execution = harness.orchestrator.feature_snapshot(external_id)["execution"]
+    revision_id = execution["current_revision_id"]
+    container = Container(
+        database=harness.database,
+        artifact_store=harness.artifact_store,
+        agent_runner=harness.agent_runner,
+        task_manager=harness.plane,
+        orchestrator=harness.orchestrator,
+        project=harness.project,
+        execution_coordinator=harness.execution_coordinator,
+    )
+
+    async def scenario() -> None:
+        transport = httpx.ASGITransport(app=create_app(container))
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            approve, changes = await asyncio.gather(
+                client.post(
+                    f"/api/implementation-revisions/{revision_id}/review-actions",
+                    json={"action": "APPROVE", "request_id": "web-race:approve"},
+                ),
+                client.post(
+                    f"/api/implementation-revisions/{revision_id}/review-actions",
+                    json={
+                        "action": "REQUEST_CHANGES",
+                        "request_id": "web-race:changes",
+                        "feedback": [{"section": "Tests", "comment": "Add an assertion."}],
+                    },
+                ),
+            )
+            assert sorted([approve.status_code, changes.status_code]) == [200, 409]
+            detail = (await client.get(f"/api/executions/{execution['id']}")).json()
+            assert detail["implementation_revisions"][0]["status"] in {
+                "APPROVED",
+                "CHANGES_REQUESTED",
+            }
+
+    asyncio.run(scenario())
+
+
+def test_plane_mode_implementation_review_surface_is_read_only_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ENZO_REVIEW_UI_WRITE_ENABLED", raising=False)
+    remote = _remote_repository(tmp_path / "git")
+    harness = make_harness(tmp_path / "enzo", project=_project(remote))
+    external_id = create_ready_plan(harness, external_id="PLANE-IMPL-READONLY")
+    _approve_plan(harness, external_id)
+    harness.orchestrator.drain(max_steps=50)
+    execution = harness.orchestrator.feature_snapshot(external_id)["execution"]
+    revision_id = execution["current_revision_id"]
+    container = replace(
+        Container(
+            database=harness.database,
+            artifact_store=harness.artifact_store,
+            agent_runner=harness.agent_runner,
+            task_manager=harness.plane,
+            orchestrator=harness.orchestrator,
+            project=harness.project,
+            execution_coordinator=harness.execution_coordinator,
+        ),
+        task_manager=object(),
+    )
+
+    async def scenario() -> None:
+        transport = httpx.ASGITransport(app=create_app(container))
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            detail = await client.get(f"/api/executions/{execution['id']}")
+            assert detail.status_code == 200
+            assert detail.json()["review_write_enabled"] is False
+            approve = await client.post(
+                f"/api/implementation-revisions/{revision_id}/review-actions",
+                json={"action": "APPROVE", "request_id": "readonly:implementation"},
+            )
+            assert approve.status_code == 403
+            unchanged = (await client.get(f"/api/executions/{execution['id']}")).json()
+            assert unchanged["implementation_revisions"][0]["status"] == "REVIEW"
+
+    asyncio.run(scenario())

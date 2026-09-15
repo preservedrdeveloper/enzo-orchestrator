@@ -3,11 +3,11 @@ from __future__ import annotations
 import os
 import uuid
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .config import environment_flag
 from .container import Container
@@ -32,15 +32,39 @@ class TextSelectionBody(BaseModel):
     suffix: str = Field(default="", max_length=80)
 
 
-class FeedbackItemBody(BaseModel):
+class FeedbackContentBody(BaseModel):
     section: str | None = Field(default=None, max_length=200)
     comment: str = Field(min_length=1, max_length=10_000)
+
+    @field_validator("comment")
+    @classmethod
+    def comment_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("feedback comment must not be blank")
+        return value
+
+
+class FeedbackItemBody(FeedbackContentBody):
     selection: TextSelectionBody | None = None
 
 
 class ReviewActionBody(BaseModel):
     action: Literal["APPROVE", "REQUEST_CHANGES", "ADDRESS_WITH_AGENT"]
     feedback: list[FeedbackItemBody] = Field(default_factory=list, max_length=100)
+    request_id: str = Field(
+        default_factory=lambda: str(uuid.uuid4()), min_length=1, max_length=200
+    )
+
+
+class ImplementationFeedbackItemBody(FeedbackContentBody):
+    pass
+
+
+class ImplementationReviewActionBody(BaseModel):
+    action: Literal["APPROVE", "REQUEST_CHANGES", "ADDRESS_WITH_AGENT"]
+    feedback: list[ImplementationFeedbackItemBody] = Field(
+        default_factory=list, max_length=100
+    )
     request_id: str = Field(
         default_factory=lambda: str(uuid.uuid4()), min_length=1, max_length=200
     )
@@ -96,6 +120,29 @@ def build_review_router(services: Container) -> APIRouter:
                 detail="Plane mode review writes require ENZO_REVIEW_UI_ACTOR_ID",
             )
         return review_actor_id()
+
+    def prepare_implementation_review_detail(
+        detail: dict[str, Any],
+    ) -> dict[str, Any]:
+        worktree_path = detail.pop("worktree_path", None)
+        detail["worktree_present"] = bool(
+            worktree_path and Path(worktree_path).is_dir()
+        )
+        for item in detail["evidence"]:
+            item.pop("log_path", None)
+        for revision in detail["implementation_revisions"]:
+            revision.pop("diff_path", None)
+        for run in detail["result"].get("agent_runs", []):
+            run.pop("metadata", None)
+        detail["review_actor_id"] = review_actor_id()
+        detail["review_write_enabled"] = write_enabled
+        snapshot = services.orchestrator.feature_snapshot(detail["external_id"])
+        detail["feature_stage"] = snapshot["stage"] if snapshot else None
+        return detail
+
+    def implementation_review_detail(execution_id: str) -> dict[str, object] | None:
+        detail = services.orchestrator.execution_detail(execution_id)
+        return prepare_implementation_review_detail(detail) if detail else None
 
     @router.get("/api/artifact-revisions/{revision_id}")
     def artifact_revision(revision_id: str) -> dict[str, object]:
@@ -168,10 +215,53 @@ def build_review_router(services: Container) -> APIRouter:
         snapshot = services.orchestrator.feature_snapshot(detail["external_id"])
         return {"event": _result(result), "feature": snapshot}
 
+    @router.get("/api/executions/{execution_id}")
+    def implementation_execution(execution_id: str) -> dict[str, object]:
+        detail = implementation_review_detail(execution_id)
+        if not detail:
+            raise HTTPException(status_code=404, detail="Execution not found")
+        return detail
+
+    @router.post("/api/implementation-revisions/{revision_id}/review-actions")
+    def implementation_review_action(
+        revision_id: str, body: ImplementationReviewActionBody
+    ) -> dict[str, object]:
+        feedback = tuple(
+            FeedbackDraft(
+                section=item.section.strip() if item.section and item.section.strip() else None,
+                comment=item.comment.strip(),
+            )
+            for item in body.feedback
+        )
+        result = services.orchestrator.submit_implementation_review(
+            revision_id=revision_id,
+            actor_id=write_actor_id(),
+            action=CommandAction(body.action),
+            feedback=feedback,
+            delivery_id=f"review-ui:{body.request_id}",
+        )
+        if result.outcome is EventOutcome.REJECTED:
+            raise HTTPException(status_code=422, detail=result.message)
+        if result.outcome is EventOutcome.STALE:
+            raise HTTPException(status_code=409, detail=result.message)
+        raw_execution = services.orchestrator.execution_detail_for_revision(revision_id)
+        execution = (
+            prepare_implementation_review_detail(raw_execution) if raw_execution else None
+        )
+        return {"event": _result(result), "execution": execution}
+
     @router.get("/artifacts/{revision_id}", response_class=HTMLResponse)
     def artifact(revision_id: str) -> HTMLResponse:
         if not services.orchestrator.revision_detail(revision_id):
             raise HTTPException(status_code=404, detail="Artifact revision not found")
         return HTMLResponse((REVIEW_UI_DIR / "index.html").read_text(encoding="utf-8"))
+
+    @router.get("/executions/{execution_id}", response_class=HTMLResponse)
+    def implementation(execution_id: str) -> HTMLResponse:
+        if not services.orchestrator.execution_detail(execution_id):
+            raise HTTPException(status_code=404, detail="Execution not found")
+        return HTMLResponse(
+            (REVIEW_UI_DIR / "implementation.html").read_text(encoding="utf-8")
+        )
 
     return router

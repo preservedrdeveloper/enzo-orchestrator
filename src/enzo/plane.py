@@ -377,7 +377,7 @@ class PlaneTaskManagerAdapter:
                 f"<p><strong>Branch:</strong> {html.escape(str(payload['branch']))}</p>"
                 f"<p><strong>Commit:</strong> {html.escape(str(payload['head_sha']))}</p>"
                 f'<p><a href="{html.escape(execution_url, quote=True)}">'
-                "Open implementation evidence</a></p>"
+                "Open implementation review</a></p>"
                 f"<pre>{html.escape(str(payload.get('diff_stat') or 'No diff summary'))}</pre>"
                 "<p>Approve or request changes with a new comment:</p>"
                 f"<pre>@enzo approve implementation@{revision}</pre>"

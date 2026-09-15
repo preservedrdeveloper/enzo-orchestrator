@@ -73,6 +73,7 @@ class ExecutionCoordinator:
         *,
         comment: ExternalComment,
         command: ReviewCommand,
+        expected_revision_id: str | None = None,
     ) -> EventResult:
         current = self._current_review_context(connection, comment.feature_id)
         if current is None:
@@ -80,7 +81,13 @@ class ExecutionCoordinator:
                 EventOutcome.REJECTED,
                 "feature has no implementation revision under Enzo review",
             )
-        if current["revision_no"] != command.revision:
+        if (
+            current["revision_no"] != command.revision
+            or (
+                expected_revision_id is not None
+                and current["revision_id"] != expected_revision_id
+            )
+        ):
             return EventResult(
                 EventOutcome.STALE,
                 f"command targets implementation@{command.revision}; "

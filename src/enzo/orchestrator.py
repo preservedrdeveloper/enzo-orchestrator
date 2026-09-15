@@ -281,6 +281,84 @@ class Orchestrator:
             )
             return result
 
+    def submit_implementation_review(
+        self,
+        *,
+        revision_id: str,
+        actor_id: str,
+        action: CommandAction,
+        feedback: tuple[FeedbackDraft, ...] = (),
+        delivery_id: str,
+    ) -> EventResult:
+        """Apply a review-surface decision to an exact implementation revision."""
+
+        payload = {
+            "revision_id": revision_id,
+            "actor_id": actor_id,
+            "action": action,
+            "feedback": [asdict(item) for item in feedback],
+        }
+        with self.database.transaction() as connection:
+            duplicate = self._begin_event(
+                connection,
+                delivery_id=delivery_id,
+                event_type="IMPLEMENTATION_REVIEW_SURFACE_ACTION",
+                payload=payload,
+                source="REVIEW_SURFACE",
+            )
+            if duplicate:
+                return duplicate
+            if actor_id not in self.reviewer_ids:
+                result = EventResult(EventOutcome.REJECTED, "actor is not an allowed reviewer")
+                self._finish_event(connection, delivery_id, result, rejected=True)
+                return result
+            if not self.execution_coordinator:
+                result = EventResult(
+                    EventOutcome.REJECTED,
+                    "implementation execution is not configured for this project",
+                )
+                self._finish_event(connection, delivery_id, result, rejected=True)
+                return result
+            target = connection.execute(
+                """SELECT f.external_id, ir.revision_no
+                   FROM implementation_revisions ir
+                   JOIN executions e ON e.id = ir.execution_id
+                   JOIN features f ON f.id = e.feature_id
+                   WHERE ir.id = ?""",
+                (revision_id,),
+            ).fetchone()
+            if not target:
+                result = EventResult(
+                    EventOutcome.REJECTED, "implementation revision not found"
+                )
+                self._finish_event(connection, delivery_id, result, rejected=True)
+                return result
+            comment = ExternalComment(
+                id=delivery_id,
+                feature_id=target["external_id"],
+                actor_id=actor_id,
+                body=f"review surface: {action.value}",
+            )
+            command = ReviewCommand(
+                action=action,
+                target=ReviewTarget.IMPLEMENTATION,
+                revision=target["revision_no"],
+                feedback=feedback,
+            )
+            result = self.execution_coordinator.handle_review_command(
+                connection,
+                comment=comment,
+                command=command,
+                expected_revision_id=revision_id,
+            )
+            self._finish_event(
+                connection,
+                delivery_id,
+                result,
+                rejected=result.outcome in {EventOutcome.REJECTED, EventOutcome.STALE},
+            )
+            return result
+
     def _handle_artifact_review_command(
         self,
         connection: sqlite3.Connection,
@@ -1601,8 +1679,25 @@ class Orchestrator:
                         (revision["id"],),
                     ).fetchall()
                 ]
+                item["resolved_feedback"] = [
+                    dict(feedback)
+                    for feedback in connection.execute(
+                        """SELECT * FROM implementation_feedback_items
+                           WHERE resolved_in_revision_id = ?
+                           ORDER BY created_at, source_ordinal""",
+                        (revision["id"],),
+                    ).fetchall()
+                ]
                 detail["implementation_revisions"].append(item)
             return detail
+
+    def execution_detail_for_revision(self, revision_id: str) -> dict[str, Any] | None:
+        with self.database.read() as connection:
+            execution = connection.execute(
+                "SELECT execution_id FROM implementation_revisions WHERE id = ?",
+                (revision_id,),
+            ).fetchone()
+        return self.execution_detail(execution["execution_id"]) if execution else None
 
     @staticmethod
     def _pending_review(connection: sqlite3.Connection, revision_id: str) -> sqlite3.Row | None:
