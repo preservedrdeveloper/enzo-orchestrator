@@ -1526,6 +1526,19 @@ class Orchestrator:
                     feedback_detail.pop("location_json") or "null"
                 )
                 detail["feedback"].append(feedback_detail)
+            resolved_feedback = connection.execute(
+                """SELECT * FROM feedback_items
+                   WHERE resolved_in_revision_id = ?
+                   ORDER BY created_at, source_ordinal""",
+                (revision_id,),
+            ).fetchall()
+            detail["resolved_feedback"] = []
+            for item in resolved_feedback:
+                feedback_detail = dict(item)
+                feedback_detail["location"] = json.loads(
+                    feedback_detail.pop("location_json") or "null"
+                )
+                detail["resolved_feedback"].append(feedback_detail)
             detail["execution_plan"] = self._read_execution_plan(connection, revision_id)
             plan_file = connection.execute(
                 "SELECT plan_path, plan_sha256 FROM execution_plans WHERE artifact_revision_id = ?",

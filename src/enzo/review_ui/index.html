@@ -9,18 +9,21 @@
 </head>
 <body>
   <header class="app-header">
-    <a class="brand" href="#" aria-label="Enzo home">
+    <div class="brand" aria-label="Enzo review workspace">
       <span class="brand-mark" aria-hidden="true">E</span>
       <span>Enzo</span>
-    </a>
+    </div>
     <div class="header-context">
       <span id="feature-key">Loading…</span>
       <span class="separator" aria-hidden="true">/</span>
       <strong id="feature-title">Artifact review</strong>
     </div>
-    <div class="reviewer" title="V0 local reviewer identity">
-      <span class="presence" aria-hidden="true"></span>
-      <span id="reviewer-id">reviewer</span>
+    <div class="header-actions">
+      <button id="back-to-plane" class="back-link" type="button" hidden>← Back to Plane</button>
+      <div class="reviewer" title="V0 local reviewer identity">
+        <span class="presence" aria-hidden="true"></span>
+        <span id="reviewer-id">reviewer</span>
+      </div>
     </div>
   </header>
 
@@ -43,9 +46,28 @@
         </div>
 
         <div id="selection-hint" class="selection-hint">
-          Select text in the artifact to attach precise feedback.
+          <strong id="review-objective">Review this artifact.</strong>
+          <span id="selection-guidance">Select text to attach precise feedback.</span>
         </div>
-        <pre id="artifact-source" class="artifact-source" tabindex="0" aria-label="Markdown artifact source"></pre>
+
+        <div class="view-toolbar">
+          <div class="view-tabs" role="tablist" aria-label="Artifact view">
+            <button id="view-rendered" class="view-tab active" type="button" role="tab"
+                    aria-selected="true" aria-controls="artifact-rendered">Rendered</button>
+            <button id="view-source" class="view-tab" type="button" role="tab"
+                    aria-selected="false" aria-controls="artifact-source">Source</button>
+            <button id="view-diff" class="view-tab" type="button" role="tab"
+                    aria-selected="false" aria-controls="artifact-diff">Diff</button>
+          </div>
+          <span id="diff-summary" class="diff-summary"></span>
+        </div>
+
+        <div id="artifact-rendered" class="artifact-rendered" role="tabpanel"
+             aria-labelledby="view-rendered" tabindex="0"></div>
+        <pre id="artifact-source" class="artifact-source" role="tabpanel"
+             aria-labelledby="view-source" tabindex="0" hidden></pre>
+        <div id="artifact-diff" class="artifact-diff" role="tabpanel"
+             aria-labelledby="view-diff" tabindex="0" hidden></div>
 
         <details id="execution-plan-panel" class="supplement" hidden>
           <summary>Machine-readable execution plan</summary>
@@ -87,9 +109,17 @@
         <div id="feedback-list" class="feedback-list"></div>
         <div id="empty-feedback" class="empty-state">
           <span class="empty-icon" aria-hidden="true">⌁</span>
-          <strong>No feedback yet</strong>
-          <span>Select text to start a review.</span>
+          <strong id="empty-feedback-title">No feedback yet</strong>
+          <span id="empty-feedback-copy">Select text to start a review.</span>
         </div>
+
+        <section id="resolved-feedback-section" class="resolved-feedback-section" hidden>
+          <div class="resolved-feedback-heading">
+            <strong>Addressed in this revision</strong>
+            <span id="resolved-feedback-count" class="count">0</span>
+          </div>
+          <div id="resolved-feedback-list" class="feedback-list resolved"></div>
+        </section>
 
         <div class="decision-bar">
           <p id="decision-help">Loading available actions…</p>

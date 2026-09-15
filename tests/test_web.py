@@ -38,6 +38,8 @@ def test_fake_plane_api_and_artifact_viewer(harness: Harness) -> None:
             viewer = await client.get(f"/artifacts/{revision_id}")
             assert viewer.status_code == 200
             assert "Enzo Review" in viewer.text
+            assert "Rendered" in viewer.text
+            assert "Addressed in this revision" in viewer.text
             assert "/review-assets/app.js" in viewer.text
             detail = await client.get(f"/api/artifact-revisions/{revision_id}")
             assert detail.status_code == 200
@@ -142,6 +144,8 @@ def test_review_surface_selection_feedback_and_agent_revision(harness: Harness) 
             assert (await client.post("/worker/drain")).status_code == 200
             revised = (await client.get(f"/api/artifact-revisions/{next_revision_id}")).json()
             assert revised["status"] == "REVIEW"
+            assert revised["resolved_feedback"][0]["comment"] == feedback["comment"]
+            assert revised["resolved_feedback"][0]["resolution_type"] == "AGENT"
 
     asyncio.run(scenario())
 
