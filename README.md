@@ -44,9 +44,9 @@ Plane work item with enzo:managed
 ```
 
 The opt-in Pi RPC adapter is the first real agent backend; FakeAgent remains the
-deterministic default. Explicit Retry/Inspect/Abandon operations and manual
-implementation revision signaling remain outside the implemented slice. A
-failed execution keeps its worktree and evidence for inspection.
+deterministic default. Failed implementation operations preserve their evidence
+and worktree for explicit Inspect, Retry, or Abandon recovery. Manual
+implementation revision signaling remains outside the implemented slice.
 
 ## Design rules
 
@@ -243,6 +243,14 @@ review state machine used by Plane comments. Every browser command targets the
 exact visible revision, so concurrent or stale decisions are rejected rather
 than applied to a newer commit. An agent revision keeps the same worktree and
 the page refreshes automatically while coding and verification run.
+
+Failed setup, coding, verification, and closure operations appear in that same
+workspace. **Inspect evidence** is read-only. **Retry** requeues the exact failed
+job against the same Execution and worktree, while incrementing its durable job
+attempt. **Abandon** requires confirmation, marks the Execution `CANCELLED`, and
+queues application-owned forced cleanup of only the registered managed
+worktree. Evidence and event history remain inspectable after cleanup. Retry
+and Abandon are idempotent human actions, and a concurrent pair has one winner.
 
 The review surface currently has no login flow. In Fake mode it acts as
 `ENZO_REVIEW_UI_ACTOR_ID`, or the first configured reviewer when that variable

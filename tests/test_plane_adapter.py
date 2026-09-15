@@ -188,3 +188,46 @@ def test_implementation_changes_notice_offers_agent_resolution() -> None:
     payload = json.loads(requests[0].content)
     assert "3 feedback item(s) recorded" in payload["comment_html"]
     assert "@enzo address-with-agent implementation@2" in payload["comment_html"]
+
+
+def test_implementation_recovery_notices_explain_retry_and_abandonment() -> None:
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(201, json={"id": f"comment-{len(requests)}"})
+
+    client = httpx.Client(base_url="http://plane.test", transport=httpx.MockTransport(handle))
+    adapter = PlaneTaskManagerAdapter(binding(), client=client)
+    adapter.deliver(
+        OutboxMessage(
+            id="outbox-retry",
+            kind="IMPLEMENTATION_RETRY_QUEUED",
+            external_feature_id="work-item-1",
+            idempotency_key="execution:1:retry:2",
+            payload={
+                "execution_id": "execution-1",
+                "operation": "VERIFY_IMPLEMENTATION",
+                "attempt": 2,
+            },
+        )
+    )
+    adapter.deliver(
+        OutboxMessage(
+            id="outbox-abandon",
+            kind="IMPLEMENTATION_ABANDONED",
+            external_feature_id="work-item-1",
+            idempotency_key="execution:1:abandoned",
+            payload={"execution_id": "execution-1"},
+        )
+    )
+
+    retry = json.loads(requests[0].content)["comment_html"]
+    abandoned = json.loads(requests[1].content)["comment_html"]
+    assert "IMPLEMENTATION RETRY QUEUED" in retry
+    assert "VERIFY_IMPLEMENTATION" in retry
+    assert "attempt 2" in retry
+    assert "http://enzo.test/executions/execution-1" in retry
+    assert "IMPLEMENTATION ABANDONED" in abandoned
+    assert "worktree cleanup" in abandoned
+    assert "http://enzo.test/executions/execution-1" in abandoned

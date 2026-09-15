@@ -32,6 +32,7 @@ from .domain import (
     CommandAction,
     EventOutcome,
     EventResult,
+    ExecutionRecoveryAction,
     ExternalComment,
     ExternalFeature,
     FeatureStage,
@@ -351,6 +352,58 @@ class Orchestrator:
                 command=command,
                 expected_revision_id=revision_id,
             )
+            self._finish_event(
+                connection,
+                delivery_id,
+                result,
+                rejected=result.outcome in {EventOutcome.REJECTED, EventOutcome.STALE},
+            )
+            return result
+
+    def submit_execution_recovery(
+        self,
+        *,
+        execution_id: str,
+        actor_id: str,
+        action: ExecutionRecoveryAction,
+        delivery_id: str,
+    ) -> EventResult:
+        """Apply an idempotent human recovery decision to one exact execution."""
+
+        payload = {
+            "execution_id": execution_id,
+            "actor_id": actor_id,
+            "action": action,
+        }
+        with self.database.transaction() as connection:
+            duplicate = self._begin_event(
+                connection,
+                delivery_id=delivery_id,
+                event_type="EXECUTION_RECOVERY_ACTION",
+                payload=payload,
+                source="REVIEW_SURFACE",
+            )
+            if duplicate:
+                return duplicate
+            if actor_id not in self.reviewer_ids:
+                result = EventResult(EventOutcome.REJECTED, "actor is not an allowed reviewer")
+            elif not self.execution_coordinator:
+                result = EventResult(
+                    EventOutcome.REJECTED,
+                    "implementation execution is not configured for this project",
+                )
+            elif action is ExecutionRecoveryAction.RETRY:
+                result = self.execution_coordinator.retry_failed_execution(
+                    connection,
+                    execution_id=execution_id,
+                    actor_id=actor_id,
+                )
+            else:
+                result = self.execution_coordinator.abandon_failed_execution(
+                    connection,
+                    execution_id=execution_id,
+                    actor_id=actor_id,
+                )
             self._finish_event(
                 connection,
                 delivery_id,

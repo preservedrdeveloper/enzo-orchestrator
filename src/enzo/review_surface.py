@@ -16,6 +16,7 @@ from .domain import (
     CommandAction,
     EventOutcome,
     EventResult,
+    ExecutionRecoveryAction,
     FeedbackDraft,
     TextSelection,
 )
@@ -65,6 +66,13 @@ class ImplementationReviewActionBody(BaseModel):
     feedback: list[ImplementationFeedbackItemBody] = Field(
         default_factory=list, max_length=100
     )
+    request_id: str = Field(
+        default_factory=lambda: str(uuid.uuid4()), min_length=1, max_length=200
+    )
+
+
+class ExecutionRecoveryActionBody(BaseModel):
+    action: Literal["RETRY", "ABANDON"]
     request_id: str = Field(
         default_factory=lambda: str(uuid.uuid4()), min_length=1, max_length=200
     )
@@ -134,6 +142,11 @@ def build_review_router(services: Container) -> APIRouter:
             revision.pop("diff_path", None)
         for run in detail["result"].get("agent_runs", []):
             run.pop("metadata", None)
+        detail["recovery"] = (
+            services.execution_coordinator.recovery_snapshot(detail["id"])
+            if services.execution_coordinator
+            else None
+        )
         detail["review_actor_id"] = review_actor_id()
         detail["review_write_enabled"] = write_enabled
         snapshot = services.orchestrator.feature_snapshot(detail["external_id"])
@@ -142,7 +155,9 @@ def build_review_router(services: Container) -> APIRouter:
 
     def implementation_review_detail(execution_id: str) -> dict[str, object] | None:
         detail = services.orchestrator.execution_detail(execution_id)
-        return prepare_implementation_review_detail(detail) if detail else None
+        if not detail or detail["project_id"] != services.project.id:
+            return None
+        return prepare_implementation_review_detail(detail)
 
     @router.get("/api/artifact-revisions/{revision_id}")
     def artifact_revision(revision_id: str) -> dict[str, object]:
@@ -250,6 +265,23 @@ def build_review_router(services: Container) -> APIRouter:
         )
         return {"event": _result(result), "execution": execution}
 
+    @router.post("/api/executions/{execution_id}/recovery-actions")
+    def execution_recovery_action(
+        execution_id: str, body: ExecutionRecoveryActionBody
+    ) -> dict[str, object]:
+        result = services.orchestrator.submit_execution_recovery(
+            execution_id=execution_id,
+            actor_id=write_actor_id(),
+            action=ExecutionRecoveryAction(body.action),
+            delivery_id=f"review-ui:{body.request_id}",
+        )
+        if result.outcome is EventOutcome.REJECTED:
+            raise HTTPException(status_code=422, detail=result.message)
+        if result.outcome is EventOutcome.STALE:
+            raise HTTPException(status_code=409, detail=result.message)
+        execution = implementation_review_detail(execution_id)
+        return {"event": _result(result), "execution": execution}
+
     @router.get("/artifacts/{revision_id}", response_class=HTMLResponse)
     def artifact(revision_id: str) -> HTMLResponse:
         if not services.orchestrator.revision_detail(revision_id):
@@ -258,7 +290,7 @@ def build_review_router(services: Container) -> APIRouter:
 
     @router.get("/executions/{execution_id}", response_class=HTMLResponse)
     def implementation(execution_id: str) -> HTMLResponse:
-        if not services.orchestrator.execution_detail(execution_id):
+        if not implementation_review_detail(execution_id):
             raise HTTPException(status_code=404, detail="Execution not found")
         return HTMLResponse(
             (REVIEW_UI_DIR / "implementation.html").read_text(encoding="utf-8")

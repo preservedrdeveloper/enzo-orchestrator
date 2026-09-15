@@ -13,8 +13,12 @@ from conftest import Harness, make_harness
 from test_plan_cycle import create_ready_plan
 
 from enzo.container import Container
-from enzo.domain import AgentRole, EventOutcome
-from enzo.execution.coordinator import ExecutionCommandError, RemoteHeadMismatchError
+from enzo.domain import AgentRole, EventOutcome, ExecutionRecoveryAction
+from enzo.execution.coordinator import (
+    ExecutionCommandError,
+    RemoteHeadMismatchError,
+    upsert_project,
+)
 from enzo.execution.models import CommandSpec, ProjectConfig
 from enzo.web import create_app
 
@@ -49,19 +53,37 @@ def _remote_repository(root: Path) -> Path:
     return remote
 
 
-def _project(remote: Path, *, failing_lint: bool = False) -> ProjectConfig:
+def _project(
+    remote: Path,
+    *,
+    failing_lint: bool = False,
+    fail_once_lint: bool = False,
+    fail_once_bootstrap: bool = False,
+) -> ProjectConfig:
     success_check = (
         sys.executable,
         "-c",
         "from pathlib import Path; assert Path('enzo-implementation.txt').is_file()",
     )
-    lint = (sys.executable, "-c", "raise SystemExit(7)") if failing_lint else success_check
+    fail_once = (
+        sys.executable,
+        "-c",
+        "from pathlib import Path; "
+        "marker=Path('.enzo-fail-once'); exists=marker.exists(); "
+        "marker.write_text('attempted'); raise SystemExit(0 if exists else 7)",
+    )
+    lint = (
+        (sys.executable, "-c", "raise SystemExit(7)")
+        if failing_lint
+        else fail_once if fail_once_lint else success_check
+    )
+    bootstrap = (CommandSpec("bootstrap", fail_once),) if fail_once_bootstrap else ()
     return ProjectConfig(
         id="repository-project",
         external_id="plane-project",
         name="Repository Project",
         repository_url=str(remote),
-        commands=(
+        commands=bootstrap + (
             CommandSpec("lint", lint),
             CommandSpec("test", success_check),
             CommandSpec("build", success_check),
@@ -77,6 +99,18 @@ def _approve_plan(harness: Harness, external_id: str) -> None:
         f"{external_id}:approve-plan",
     )
     assert harness.orchestrator.ingest_comment(command).outcome is EventOutcome.APPLIED
+
+
+def _container(harness: Harness) -> Container:
+    return Container(
+        database=harness.database,
+        artifact_store=harness.artifact_store,
+        agent_runner=harness.agent_runner,
+        task_manager=harness.plane,
+        orchestrator=harness.orchestrator,
+        project=harness.project,
+        execution_coordinator=harness.execution_coordinator,
+    )
 
 
 def test_repository_bound_execution_creates_worktree_evidence_commit_and_push(
@@ -207,6 +241,210 @@ def test_failed_verification_preserves_worktree_and_does_not_push(tmp_path: Path
     ]
     branches = _git("--git-dir", str(remote), "branch", "--list", execution["branch"])
     assert branches == ""
+
+
+def test_failed_verification_retries_same_execution_and_worktree(tmp_path: Path) -> None:
+    remote = _remote_repository(tmp_path / "git")
+    harness = make_harness(
+        tmp_path / "enzo",
+        project=_project(remote, fail_once_lint=True),
+    )
+    external_id = create_ready_plan(harness, external_id="PLANE-EXEC-RETRY")
+    _approve_plan(harness, external_id)
+
+    with pytest.raises(ExecutionCommandError, match="lint failed"):
+        harness.orchestrator.drain(max_steps=50)
+    failed = harness.orchestrator.feature_snapshot(external_id)["execution"]
+    execution_id = failed["id"]
+    worktree = Path(failed["worktree_path"])
+    revision_id = failed["current_revision_id"]
+    recovery = harness.execution_coordinator.recovery_snapshot(execution_id)
+    assert recovery == {
+        "operation": "VERIFY_IMPLEMENTATION",
+        "status": "FAILED",
+        "attempts": 1,
+        "error": failed["error"],
+        "can_retry": True,
+        "can_abandon": True,
+    }
+
+    result = harness.orchestrator.submit_execution_recovery(
+        execution_id=execution_id,
+        actor_id="reviewer-1",
+        action=ExecutionRecoveryAction.RETRY,
+        delivery_id="execution-retry:verification",
+    )
+    duplicate = harness.orchestrator.submit_execution_recovery(
+        execution_id=execution_id,
+        actor_id="reviewer-1",
+        action=ExecutionRecoveryAction.RETRY,
+        delivery_id="execution-retry:verification",
+    )
+    assert result.outcome is EventOutcome.APPLIED
+    assert duplicate.outcome is EventOutcome.DUPLICATE
+    queued = harness.orchestrator.feature_snapshot(external_id)["execution"]
+    assert queued["id"] == execution_id
+    assert queued["worktree_path"] == str(worktree)
+    assert queued["status"] == "RUNNING"
+    assert queued["implementation_revisions"][0]["id"] == revision_id
+    assert queued["implementation_revisions"][0]["status"] == "UPDATING"
+
+    harness.orchestrator.drain(max_steps=50)
+
+    recovered = harness.orchestrator.feature_snapshot(external_id)["execution"]
+    assert recovered["id"] == execution_id
+    assert recovered["worktree_path"] == str(worktree)
+    assert recovered["status"] == "SUCCEEDED"
+    assert recovered["implementation_revisions"][0]["id"] == revision_id
+    assert recovered["implementation_revisions"][0]["status"] == "REVIEW"
+    assert [(item["name"], item["status"]) for item in recovered["evidence"]] == [
+        ("lint", "PASS"),
+        ("test", "PASS"),
+        ("build", "PASS"),
+    ]
+    with harness.database.read() as connection:
+        verify = connection.execute(
+            "SELECT status, attempts, last_error FROM jobs WHERE kind = 'VERIFY_IMPLEMENTATION'"
+        ).fetchone()
+    assert (verify["status"], verify["attempts"]) == ("SUCCEEDED", 2)
+    assert "lint failed" in verify["last_error"]
+
+
+def test_each_failed_retry_attempt_gets_a_distinct_outbox_notice(tmp_path: Path) -> None:
+    remote = _remote_repository(tmp_path / "git")
+    harness = make_harness(
+        tmp_path / "enzo",
+        project=_project(remote, failing_lint=True),
+    )
+    external_id = create_ready_plan(harness, external_id="PLANE-RETRY-FAILS-AGAIN")
+    _approve_plan(harness, external_id)
+    with pytest.raises(ExecutionCommandError, match="lint failed"):
+        harness.orchestrator.drain(max_steps=50)
+    execution = harness.orchestrator.feature_snapshot(external_id)["execution"]
+
+    retried = harness.orchestrator.submit_execution_recovery(
+        execution_id=execution["id"],
+        actor_id="reviewer-1",
+        action=ExecutionRecoveryAction.RETRY,
+        delivery_id="execution-retry:fails-again",
+    )
+    assert retried.outcome is EventOutcome.APPLIED
+    with pytest.raises(ExecutionCommandError, match="lint failed"):
+        harness.orchestrator.drain(max_steps=50)
+
+    with harness.database.read() as connection:
+        failures = connection.execute(
+            """SELECT idempotency_key, payload_json FROM outbox_messages
+               WHERE kind = 'IMPLEMENTATION_FAILED' ORDER BY created_at"""
+        ).fetchall()
+    assert [item["idempotency_key"].rsplit(":", 2)[-2] for item in failures] == [
+        "1",
+        "2",
+    ]
+
+
+def test_bootstrap_failure_records_worktree_and_can_retry_prepare(tmp_path: Path) -> None:
+    remote = _remote_repository(tmp_path / "git")
+    harness = make_harness(
+        tmp_path / "enzo",
+        project=_project(remote, fail_once_bootstrap=True),
+    )
+    external_id = create_ready_plan(harness, external_id="PLANE-BOOTSTRAP-RETRY")
+    _approve_plan(harness, external_id)
+
+    with pytest.raises(ExecutionCommandError, match="bootstrap failed"):
+        harness.orchestrator.drain(max_steps=50)
+    failed = harness.orchestrator.feature_snapshot(external_id)["execution"]
+    worktree = Path(failed["worktree_path"])
+    assert failed["status"] == "FAILED"
+    assert failed["current_revision_id"] is None
+    assert worktree.is_dir()
+    assert [(item["name"], item["status"]) for item in failed["evidence"]] == [
+        ("bootstrap", "FAIL")
+    ]
+
+    result = harness.orchestrator.submit_execution_recovery(
+        execution_id=failed["id"],
+        actor_id="reviewer-1",
+        action=ExecutionRecoveryAction.RETRY,
+        delivery_id="execution-retry:bootstrap",
+    )
+    assert result.outcome is EventOutcome.APPLIED
+    harness.orchestrator.drain(max_steps=50)
+
+    recovered = harness.orchestrator.feature_snapshot(external_id)["execution"]
+    assert recovered["id"] == failed["id"]
+    assert recovered["worktree_path"] == str(worktree)
+    assert recovered["status"] == "SUCCEEDED"
+    assert recovered["implementation_revisions"][0]["status"] == "REVIEW"
+    assert [(item["name"], item["status"]) for item in recovered["evidence"]] == [
+        ("bootstrap", "PASS"),
+        ("lint", "PASS"),
+        ("test", "PASS"),
+        ("build", "PASS"),
+    ]
+
+
+def test_abandon_cancels_failed_execution_and_force_cleans_dirty_worktree(
+    tmp_path: Path,
+) -> None:
+    remote = _remote_repository(tmp_path / "git")
+    harness = make_harness(
+        tmp_path / "enzo",
+        project=_project(remote, failing_lint=True),
+    )
+    external_id = create_ready_plan(harness, external_id="PLANE-EXEC-ABANDON")
+    _approve_plan(harness, external_id)
+    with pytest.raises(ExecutionCommandError, match="lint failed"):
+        harness.orchestrator.drain(max_steps=50)
+    failed = harness.orchestrator.feature_snapshot(external_id)["execution"]
+    worktree = Path(failed["worktree_path"])
+    assert worktree.is_dir()
+    assert (worktree / "enzo-implementation.txt").is_file()
+
+    result = harness.orchestrator.submit_execution_recovery(
+        execution_id=failed["id"],
+        actor_id="reviewer-1",
+        action=ExecutionRecoveryAction.ABANDON,
+        delivery_id="execution-abandon:1",
+    )
+    duplicate = harness.orchestrator.submit_execution_recovery(
+        execution_id=failed["id"],
+        actor_id="reviewer-1",
+        action=ExecutionRecoveryAction.ABANDON,
+        delivery_id="execution-abandon:1",
+    )
+    assert result.outcome is EventOutcome.APPLIED
+    assert duplicate.outcome is EventOutcome.DUPLICATE
+    cancelled = harness.orchestrator.feature_snapshot(external_id)["execution"]
+    assert cancelled["status"] == "CANCELLED"
+    assert worktree.is_dir()
+
+    harness.orchestrator.drain(max_steps=50)
+
+    abandoned = harness.orchestrator.feature_snapshot(external_id)["execution"]
+    assert abandoned["status"] == "CANCELLED"
+    assert abandoned["worktree_path"] is None
+    assert not worktree.exists()
+    assert abandoned["result"]["recovery"]["abandoned"] is True
+    assert abandoned["result"]["recovery"]["worktree_cleaned"] is True
+    assert [(item["name"], item["status"]) for item in abandoned["evidence"]] == [
+        ("lint", "FAIL")
+    ]
+    with harness.database.read() as connection:
+        jobs = connection.execute(
+            "SELECT kind, status FROM jobs WHERE kind LIKE '%IMPLEMENTATION'"
+        ).fetchall()
+    assert ("VERIFY_IMPLEMENTATION", "CANCELLED") in {
+        (job["kind"], job["status"]) for job in jobs
+    }
+    assert ("CLEANUP_ABANDONED_IMPLEMENTATION", "SUCCEEDED") in {
+        (job["kind"], job["status"]) for job in jobs
+    }
+    assert any(
+        message.kind == "IMPLEMENTATION_ABANDONED"
+        for message in harness.plane.notifications
+    )
 
 
 def test_relative_data_root_still_records_an_absolute_worktree(
@@ -347,9 +585,131 @@ def test_approval_refuses_cleanup_when_remote_head_no_longer_matches(tmp_path: P
     assert worktree.exists()
     with harness.database.read() as connection:
         close = connection.execute(
-            "SELECT status FROM jobs WHERE kind = 'CLOSE_IMPLEMENTATION'"
+            "SELECT status, attempts FROM jobs WHERE kind = 'CLOSE_IMPLEMENTATION'"
         ).fetchone()
         assert close["status"] == "FAILED"
+        assert close["attempts"] == 1
+    recovery = harness.execution_coordinator.recovery_snapshot(execution["id"])
+    assert recovery["operation"] == "CLOSE_IMPLEMENTATION"
+    assert recovery["can_retry"] is True
+    assert recovery["can_abandon"] is False
+
+    _git(
+        "--git-dir",
+        str(remote),
+        "update-ref",
+        f"refs/heads/{execution['branch']}",
+        execution["head_sha"],
+    )
+    retried = harness.orchestrator.submit_execution_recovery(
+        execution_id=execution["id"],
+        actor_id="reviewer-1",
+        action=ExecutionRecoveryAction.RETRY,
+        delivery_id="execution-retry:close",
+    )
+    assert retried.outcome is EventOutcome.APPLIED
+    harness.orchestrator.drain(max_steps=50)
+    completed = harness.orchestrator.feature_snapshot(external_id)
+    assert completed["stage"] == "DONE"
+    assert completed["execution"]["status"] == "CLOSED"
+    assert not worktree.exists()
+    with harness.database.read() as connection:
+        close = connection.execute(
+            "SELECT status, attempts FROM jobs WHERE kind = 'CLOSE_IMPLEMENTATION'"
+        ).fetchone()
+    assert (close["status"], close["attempts"]) == ("SUCCEEDED", 2)
+
+
+def test_retry_and_abandon_race_has_one_recovery_winner(tmp_path: Path) -> None:
+    remote = _remote_repository(tmp_path / "git")
+    harness = make_harness(
+        tmp_path / "enzo",
+        project=_project(remote, fail_once_lint=True),
+    )
+    external_id = create_ready_plan(harness, external_id="PLANE-RECOVERY-RACE")
+    _approve_plan(harness, external_id)
+    with pytest.raises(ExecutionCommandError, match="lint failed"):
+        harness.orchestrator.drain(max_steps=50)
+    execution = harness.orchestrator.feature_snapshot(external_id)["execution"]
+
+    async def scenario() -> None:
+        transport = httpx.ASGITransport(app=create_app(_container(harness)))
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            retry, abandon = await asyncio.gather(
+                client.post(
+                    f"/api/executions/{execution['id']}/recovery-actions",
+                    json={"action": "RETRY", "request_id": "recovery-race:retry"},
+                ),
+                client.post(
+                    f"/api/executions/{execution['id']}/recovery-actions",
+                    json={"action": "ABANDON", "request_id": "recovery-race:abandon"},
+                ),
+            )
+            assert sorted([retry.status_code, abandon.status_code]) == [200, 409]
+
+    asyncio.run(scenario())
+    with harness.database.read() as connection:
+        events = connection.execute(
+            """SELECT event_type FROM domain_events
+               WHERE event_type IN ('EXECUTION_RETRY_QUEUED', 'EXECUTION_ABANDONED')"""
+        ).fetchall()
+    assert len(events) == 1
+
+    winner = events[0]["event_type"]
+    harness.orchestrator.drain(max_steps=50)
+    final = harness.orchestrator.feature_snapshot(external_id)["execution"]
+    if winner == "EXECUTION_RETRY_QUEUED":
+        assert final["status"] == "SUCCEEDED"
+        assert final["implementation_revisions"][0]["status"] == "REVIEW"
+    else:
+        assert final["status"] == "CANCELLED"
+        assert final["worktree_path"] is None
+
+
+def test_review_surface_does_not_expose_or_recover_another_projects_execution(
+    tmp_path: Path,
+) -> None:
+    remote = _remote_repository(tmp_path / "git")
+    harness = make_harness(
+        tmp_path / "enzo",
+        project=_project(remote, failing_lint=True),
+    )
+    external_id = create_ready_plan(harness, external_id="PLANE-OTHER-PROJECT")
+    _approve_plan(harness, external_id)
+    with pytest.raises(ExecutionCommandError, match="lint failed"):
+        harness.orchestrator.drain(max_steps=50)
+    snapshot = harness.orchestrator.feature_snapshot(external_id)
+    execution_id = snapshot["execution"]["id"]
+    other_project = replace(
+        harness.project,
+        id="other-project",
+        external_id="other-plane-project",
+    )
+    upsert_project(harness.database, other_project)
+    with harness.database.transaction() as connection:
+        connection.execute(
+            "UPDATE features SET project_id = ? WHERE id = ?",
+            (other_project.id, snapshot["id"]),
+        )
+        connection.execute(
+            "UPDATE executions SET project_id = ? WHERE id = ?",
+            (other_project.id, execution_id),
+        )
+
+    async def scenario() -> None:
+        transport = httpx.ASGITransport(app=create_app(_container(harness)))
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            detail = await client.get(f"/api/executions/{execution_id}")
+            page = await client.get(f"/executions/{execution_id}")
+            recovery = await client.post(
+                f"/api/executions/{execution_id}/recovery-actions",
+                json={"action": "ABANDON", "request_id": "other-project:abandon"},
+            )
+            assert detail.status_code == 404
+            assert page.status_code == 404
+            assert recovery.status_code == 422
+
+    asyncio.run(scenario())
 
 
 def test_implementation_review_decision_race_has_one_winner(tmp_path: Path) -> None:
@@ -596,6 +956,11 @@ def test_plane_mode_implementation_review_surface_is_read_only_by_default(
                 json={"action": "APPROVE", "request_id": "readonly:implementation"},
             )
             assert approve.status_code == 403
+            recover = await client.post(
+                f"/api/executions/{execution['id']}/recovery-actions",
+                json={"action": "RETRY", "request_id": "readonly:recovery"},
+            )
+            assert recover.status_code == 403
             unchanged = (await client.get(f"/api/executions/{execution['id']}")).json()
             assert unchanged["implementation_revisions"][0]["status"] == "REVIEW"
 

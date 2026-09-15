@@ -6,13 +6,13 @@ repository binding; deterministic clone/fetch/branch/worktree/commit/push;
 FakeAgent coding; revisioned implementation feedback; repeated lint/test/build
 evidence; remote-SHA approval fencing; worktree cleanup; and DONE projection.
 The opt-in Pi RPC adapter is the first real agent backend. Operator recovery
-commands remain a future slice.
+controls cover deterministic Inspect, Retry, and Abandon behavior.
 
 This document preserves the intended V0 design and therefore includes proposed
 objects and steps that are not implemented yet. The README and executable tests
 are authoritative for current behavior. In particular, parsed verification
-requirements, Retry/Inspect/Abandon operations, and automatic manual
-implementation revision detection are still future work.
+requirements and automatic manual implementation revision detection are still
+future work.
 
 Reviewed: 2026-09-14
 
@@ -105,8 +105,9 @@ No Redis, Celery, Kafka, Kubernetes, or separate workflow service is needed to t
 11. If checks pass, commit, push with generic Git, record SHA/diff/evidence, and request implementation review.
 12. On implementation feedback, reuse the same worktree, create a new implementation revision, rerun all required evidence, and request review again.
 13. On final approval, verify the recorded commit and remote branch, close the execution, remove the worktree, prune, and mark the feature `DONE`.
-14. Future: expose Retry, Inspect, and Abandon operations for failed executions.
-   Retry and Abandon must require explicit human commands.
+14. Expose read-only Inspect plus explicit Retry and Abandon controls for failed
+    executions. Retry requeues the exact failed durable job in the same
+    Execution/worktree; Abandon queues deterministic managed-worktree cleanup.
 
 ### Practical manual editing
 
@@ -177,8 +178,8 @@ PENDING ─► RUNNING ─► SUCCEEDED ─► CLOSED
                ├─► FAILED  └─► RUNNING (feedback attempt, same worktree)
                └─► CANCELLED
 
-FAILED ─► RUNNING (Retry) | CLOSED (Abandon)
-CANCELLED ─► CLOSED
+FAILED ─► PENDING/RUNNING (Retry) | CANCELLED (Abandon)
+CANCELLED ─► worktree cleanup (status remains CANCELLED)
 ```
 
 `SUCCEEDED` means a pushed reviewable implementation exists; it does not mean the Feature is done. `CLOSED` follows human approval or explicit abandonment and cleanup policy.
@@ -330,9 +331,10 @@ Git credentials are available only to the deterministic fetch/push subprocess. T
 Failure policy:
 
 - Coding/check/push failure: preserve worktree; expose Retry, Inspect, Abandon.
-- Retry: same Execution and worktree, new ExecutionAttempt.
-- Inspect: publish logs, paths, and current diff without mutation.
-- Abandon: explicit human action; close and clean according to policy.
+- Retry: same Execution and worktree; increment the exact durable job attempt.
+- Inspect: publish sanitized logs, evidence, and the recorded diff without mutation.
+- Abandon: explicit human action; mark `CANCELLED` and force-remove only the
+  registered path beneath the managed worktree root. Preserve evidence/history.
 - Service crash: reconcile registered worktree, branch, SHA, job lease, and remote state before doing anything again.
 
 ## 8. Plane integration approach

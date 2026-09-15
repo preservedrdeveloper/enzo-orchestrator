@@ -19,7 +19,10 @@ const el = Object.fromEntries(
     'view-patch', 'view-evidence', 'implementation-overview', 'implementation-patch',
     'implementation-evidence', 'diff-summary', 'checks-summary', 'changed-files-count',
     'worktree-state', 'changed-files', 'open-patch', 'agent-summary', 'patch-content',
-    'evidence-list', 'revision-history', 'new-feedback', 'composer', 'feedback-section',
+    'evidence-list', 'revision-history', 'recovery-panel', 'recovery-state',
+    'recovery-title', 'recovery-description', 'recovery-error', 'inspect-failure',
+    'retry-execution', 'abandon-execution', 'abandon-dialog', 'confirm-abandon',
+    'new-feedback', 'composer', 'feedback-section',
     'feedback-comment', 'cancel-comment', 'add-comment', 'feedback-list',
     'empty-feedback', 'empty-feedback-title', 'empty-feedback-copy', 'feedback-count',
     'resolved-feedback-section', 'resolved-feedback-count', 'resolved-feedback-list',
@@ -175,10 +178,9 @@ function renderPatch() {
 }
 
 function currentEvidence() {
-  if (!state.revision) return [];
   return state.detail.evidence.filter((item) => (
     item.implementation_revision_id === null
-    || item.implementation_revision_id === state.revision.id
+    || item.implementation_revision_id === state.revision?.id
   ));
 }
 
@@ -190,7 +192,9 @@ function revisionAgentRun() {
 
 function renderEvidence() {
   const items = currentEvidence();
-  const checks = items.filter((item) => item.implementation_revision_id !== null);
+  const checks = state.revision
+    ? items.filter((item) => item.implementation_revision_id !== null)
+    : items;
   const passed = checks.filter((item) => item.status === 'PASS').length;
   const failed = checks.filter((item) => item.status === 'FAIL').length;
   el['checks-summary'].textContent = checks.length
@@ -257,12 +261,54 @@ function renderAgentSummary() {
     item.append(term, description);
     return item;
   }));
-  if (state.detail.error) {
+  if (state.detail.error && !state.detail.recovery?.operation) {
     const error = document.createElement('pre');
     error.className = 'execution-error';
     error.textContent = state.detail.error;
     el['agent-summary'].append(error);
   }
+}
+
+function renderRecovery() {
+  const recovery = state.detail.recovery;
+  const visible = state.detail.status === 'FAILED'
+    || state.detail.status === 'CANCELLED'
+    || Boolean(recovery?.operation);
+  el['recovery-panel'].hidden = !visible;
+  if (!visible) return;
+
+  const operation = recovery?.operation?.replaceAll('_', ' ') || 'EXECUTION';
+  const operationStatus = recovery?.status || state.detail.status;
+  el['recovery-state'].textContent = `${operation} · ${operationStatus}`;
+  if (state.detail.status === 'CANCELLED') {
+    if (operationStatus === 'FAILED') {
+      el['recovery-title'].textContent = 'Worktree cleanup needs attention';
+      el['recovery-description'].textContent = 'The execution remains cancelled. Retry the deterministic cleanup after inspecting the failure.';
+    } else {
+      el['recovery-title'].textContent = operationStatus === 'SUCCEEDED'
+        ? 'Execution abandoned'
+        : 'Execution abandonment in progress';
+      el['recovery-description'].textContent = state.detail.worktree_present
+        ? 'The execution is cancelled. Deterministic worktree cleanup is pending.'
+        : 'The execution is cancelled and its isolated worktree is no longer present.';
+    }
+  } else if (operationStatus === 'PENDING' || operationStatus === 'RUNNING') {
+    el['recovery-title'].textContent = 'Recovery is running';
+    el['recovery-description'].textContent = 'Enzo is retrying the failed deterministic operation in the same worktree.';
+  } else {
+    el['recovery-title'].textContent = 'Execution needs attention';
+    el['recovery-description'].textContent = state.detail.worktree_present
+      ? 'The failure is recorded and the isolated worktree is preserved for inspection.'
+      : 'The failure is recorded. Inspect the available evidence before choosing a recovery action.';
+  }
+  const error = recovery?.error || state.detail.error || '';
+  el['recovery-error'].textContent = error;
+  el['recovery-error'].hidden = !error;
+  const writable = state.detail.review_write_enabled;
+  el['retry-execution'].hidden = !writable || !recovery?.can_retry;
+  el['abandon-execution'].hidden = !writable || !recovery?.can_abandon;
+  el['retry-execution'].disabled = state.busy;
+  el['abandon-execution'].disabled = state.busy;
 }
 
 function feedbackCard(item, isDraft = false, addressedHere = false) {
@@ -308,10 +354,14 @@ function renderFeedback() {
   ));
   el['empty-feedback'].hidden = items.length > 0;
   el['empty-feedback'].classList.toggle('compact', resolved.length > 0);
-  el['empty-feedback-title'].textContent = resolved.length ? 'No new feedback' : 'No feedback yet';
-  el['empty-feedback-copy'].textContent = resolved.length
-    ? 'Previously requested implementation changes are shown below.'
-    : 'Review the patch and verification evidence first.';
+  el['empty-feedback-title'].textContent = !state.revision
+    ? 'No implementation revision'
+    : resolved.length ? 'No new feedback' : 'No feedback yet';
+  el['empty-feedback-copy'].textContent = !state.revision
+    ? 'Setup failed before code review. Use the recovery controls in the execution workspace.'
+    : resolved.length
+      ? 'Previously requested implementation changes are shown below.'
+      : 'Review the patch and verification evidence first.';
   el['feedback-list'].hidden = items.length === 0;
   const openCount = persisted.filter((item) => item.status === 'OPEN').length;
   el['feedback-count'].textContent = String(openCount + state.drafts.length);
@@ -351,7 +401,9 @@ function addDraft() {
 }
 
 function isCurrentRevision() {
-  return state.revision?.id === state.detail?.current_revision_id;
+  return Boolean(
+    state.revision && state.revision.id === state.detail?.current_revision_id
+  );
 }
 
 function renderActions() {
@@ -371,7 +423,9 @@ function renderActions() {
   if (!state.detail?.review_write_enabled) {
     el['decision-help'].textContent = 'Read-only deployment. Review mutations must be enabled on a trusted host.';
   } else if (!current) {
-    el['decision-help'].textContent = 'This historical implementation revision is read-only.';
+    el['decision-help'].textContent = state.detail.status === 'FAILED'
+      ? 'Use the recovery controls after inspecting the preserved evidence.'
+      : 'This historical implementation revision is read-only.';
   } else if (review) {
     el['decision-help'].textContent = state.drafts.length
       ? `${state.drafts.length} draft feedback item(s). Submit them together or remove them to approve.`
@@ -381,7 +435,7 @@ function renderActions() {
   } else if (status === 'UPDATING') {
     el['decision-help'].textContent = 'The agent and deterministic checks are running. This page updates automatically.';
   } else if (status === 'FAILED') {
-    el['decision-help'].textContent = 'Execution failed. The worktree is preserved; recovery controls are the next V0 slice.';
+    el['decision-help'].textContent = 'Inspect the failure, then retry the exact operation or abandon this execution.';
   } else if (status === 'APPROVED') {
     el['decision-help'].textContent = 'This exact commit was approved. Enzo will verify the remote SHA before cleanup.';
   } else {
@@ -402,6 +456,7 @@ function renderHistory() {
 }
 
 function reviewObjective() {
+  if (!state.revision) return 'Implementation setup failed before a code revision was produced.';
   if (!isCurrentRevision()) return 'Inspecting an immutable historical implementation revision.';
   if (state.revision.status === 'UPDATING') return 'Enzo is producing and verifying this revision.';
   if (state.revision.status === 'CHANGES_REQUESTED') return 'Feedback is recorded for this exact commit.';
@@ -429,15 +484,18 @@ function render() {
     || 'pending';
   el['worktree-state'].textContent = detail.worktree_present
     ? 'Preserved'
-    : detail.status === 'CLOSED' ? 'Cleaned' : 'Pending';
+    : ['CLOSED', 'CANCELLED'].includes(detail.status) ? 'Cleaned' : 'Pending';
   el['review-objective'].textContent = reviewObjective();
   el['review-guidance'].textContent = revision?.status === 'UPDATING'
     ? 'No human decision is required yet. This page updates automatically.'
-    : 'Review changed files, the full patch, and evidence before deciding.';
+    : !revision
+      ? 'Inspect setup evidence before retrying or abandoning the execution.'
+      : 'Review changed files, the full patch, and evidence before deciding.';
   renderStages();
   renderPatch();
   renderEvidence();
   renderAgentSummary();
+  renderRecovery();
   renderFeedback();
   renderHistory();
   renderActions();
@@ -459,6 +517,7 @@ function selectRevision(revisionId) {
 
 function setBusy(busy) {
   state.busy = busy;
+  renderRecovery();
   renderActions();
 }
 
@@ -474,6 +533,25 @@ async function submitAction(action, feedback = []) {
     const url = new URL(location.href);
     url.searchParams.delete('revision');
     history.replaceState({}, '', url);
+    await load();
+    return payload;
+  } catch (error) {
+    showToast(error.message, true);
+    await load();
+    return null;
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function submitRecovery(action) {
+  setBusy(true);
+  try {
+    const payload = await api(`/api/executions/${executionId}/recovery-actions`, {
+      method: 'POST',
+      body: JSON.stringify({ action, request_id: requestId() }),
+    });
+    showToast(payload.event.message);
     await load();
     return payload;
   } catch (error) {
@@ -506,6 +584,7 @@ function registerWebMcpTools() {
         branch: state.detail.branch,
         base_sha: state.detail.base_sha,
         head_sha: state.revision?.head_sha,
+        recovery: state.detail.recovery,
       }),
     }, { signal: lifecycle.signal }),
     context.registerTool({
@@ -550,10 +629,15 @@ async function load() {
   state.refreshTimer = null;
   state.detail = await api(`/api/executions/${executionId}`);
   state.revision = chooseRevision(state.detail);
-  if (!state.revision) throw new Error('Execution has no implementation revision yet');
   render();
   registerWebMcpTools();
-  if (state.detail.status === 'PENDING' || state.detail.status === 'RUNNING' || state.revision.status === 'UPDATING') {
+  const recoveryRunning = ['PENDING', 'RUNNING'].includes(state.detail.recovery?.status);
+  if (
+    state.detail.status === 'PENDING'
+    || state.detail.status === 'RUNNING'
+    || state.revision?.status === 'UPDATING'
+    || recoveryRunning
+  ) {
     state.refreshTimer = setTimeout(() => {
       load().catch((error) => showToast(error.message, true));
     }, 1800);
@@ -573,6 +657,13 @@ el['request-changes'].addEventListener('click', () => submitAction(
   state.drafts.map(({ section, comment }) => ({ section, comment }))
 ));
 el['address-agent'].addEventListener('click', () => submitAction('ADDRESS_WITH_AGENT'));
+el['inspect-failure'].addEventListener('click', () => setView('evidence'));
+el['retry-execution'].addEventListener('click', () => submitRecovery('RETRY'));
+el['abandon-execution'].addEventListener('click', () => el['abandon-dialog'].showModal());
+el['confirm-abandon'].addEventListener('click', async () => {
+  el['abandon-dialog'].close();
+  await submitRecovery('ABANDON');
+});
 if (document.referrer) {
   try {
     const referrer = new URL(document.referrer);

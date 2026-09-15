@@ -35,11 +35,13 @@ PREPARE_IMPLEMENTATION = "PREPARE_IMPLEMENTATION"
 RUN_IMPLEMENTATION = "RUN_IMPLEMENTATION"
 VERIFY_IMPLEMENTATION = "VERIFY_IMPLEMENTATION"
 CLOSE_IMPLEMENTATION = "CLOSE_IMPLEMENTATION"
+CLEANUP_ABANDONED_IMPLEMENTATION = "CLEANUP_ABANDONED_IMPLEMENTATION"
 EXECUTION_JOB_KINDS = (
     PREPARE_IMPLEMENTATION,
     RUN_IMPLEMENTATION,
     VERIFY_IMPLEMENTATION,
     CLOSE_IMPLEMENTATION,
+    CLEANUP_ABANDONED_IMPLEMENTATION,
 )
 
 
@@ -104,6 +106,274 @@ class ExecutionCoordinator:
                 command.feedback,
             )
         return self._address_implementation_with_agent(connection, current, comment)
+
+    def retry_failed_execution(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        execution_id: str,
+        actor_id: str,
+    ) -> EventResult:
+        execution = self._recovery_execution(connection, execution_id)
+        if execution is None:
+            return EventResult(EventOutcome.REJECTED, "execution not found")
+        job = self._failed_recovery_job(connection, execution)
+        if job is None or not self._retry_allowed(execution, job):
+            return EventResult(
+                EventOutcome.STALE,
+                "execution has no retryable failed operation",
+                execution["feature_id"],
+            )
+
+        now = _utc_now()
+        if job["kind"] == PREPARE_IMPLEMENTATION:
+            connection.execute(
+                """UPDATE executions
+                   SET status = 'PENDING', error = NULL, finished_at = NULL, updated_at = ?
+                   WHERE id = ? AND status = 'FAILED'""",
+                (now, execution_id),
+            )
+        elif job["kind"] in {RUN_IMPLEMENTATION, VERIFY_IMPLEMENTATION}:
+            connection.execute(
+                """UPDATE executions
+                   SET status = 'RUNNING', error = NULL, finished_at = NULL, updated_at = ?
+                   WHERE id = ? AND status = 'FAILED'""",
+                (now, execution_id),
+            )
+            connection.execute(
+                """UPDATE implementation_revisions SET status = 'UPDATING'
+                   WHERE id = ? AND status = 'FAILED'""",
+                (execution["current_revision_id"],),
+            )
+
+        updated = connection.execute(
+            """UPDATE jobs
+               SET status = 'PENDING', available_at = ?, lease_owner = NULL,
+                   lease_expires_at = NULL, updated_at = ?
+               WHERE id = ? AND status = 'FAILED'""",
+            (time.time(), now, job["id"]),
+        ).rowcount
+        if updated != 1:
+            return EventResult(
+                EventOutcome.STALE,
+                "failed operation changed concurrently",
+                execution["feature_id"],
+            )
+        self._insert_outbox(
+            connection,
+            kind="IMPLEMENTATION_RETRY_QUEUED",
+            external_feature_id=execution["external_id"],
+            idempotency_key=(
+                f"execution:{execution_id}:retry:{job['id']}:attempt:{job['attempts'] + 1}"
+            ),
+            payload={
+                "execution_id": execution_id,
+                "operation": job["kind"],
+                "attempt": job["attempts"] + 1,
+                "attention": "enzo:running",
+            },
+        )
+        self._insert_domain_event(
+            connection,
+            feature_id=execution["feature_id"],
+            event_type="EXECUTION_RETRY_QUEUED",
+            actor_type="HUMAN",
+            actor_id=actor_id,
+            subject_type="EXECUTION",
+            subject_id=execution_id,
+            payload={"operation": job["kind"], "attempt": job["attempts"] + 1},
+        )
+        return EventResult(
+            EventOutcome.APPLIED,
+            f"retry queued for {job['kind'].lower()}",
+            execution["feature_id"],
+        )
+
+    def abandon_failed_execution(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        execution_id: str,
+        actor_id: str,
+    ) -> EventResult:
+        execution = self._recovery_execution(connection, execution_id)
+        if execution is None:
+            return EventResult(EventOutcome.REJECTED, "execution not found")
+        if execution["status"] != "FAILED":
+            return EventResult(
+                EventOutcome.STALE,
+                "only a failed execution can be abandoned",
+                execution["feature_id"],
+            )
+        now = _utc_now()
+        updated = connection.execute(
+            """UPDATE executions SET status = 'CANCELLED', finished_at = ?, updated_at = ?
+               WHERE id = ? AND status = 'FAILED'""",
+            (now, now, execution_id),
+        ).rowcount
+        if updated != 1:
+            return EventResult(
+                EventOutcome.STALE,
+                "execution changed concurrently",
+                execution["feature_id"],
+            )
+        related_jobs = self._related_jobs(connection, execution)
+        if related_jobs:
+            placeholders = ",".join("?" for _ in related_jobs)
+            connection.execute(
+                f"""UPDATE jobs SET status = 'CANCELLED', updated_at = ?,
+                          lease_owner = NULL, lease_expires_at = NULL
+                       WHERE id IN ({placeholders})
+                         AND status IN ('PENDING', 'RUNNING', 'FAILED')""",
+                (now, *(job["id"] for job in related_jobs)),
+            )
+        self._insert_job(
+            connection,
+            kind=CLEANUP_ABANDONED_IMPLEMENTATION,
+            idempotency_key=f"execution:{execution_id}:cleanup-abandoned",
+            payload={
+                "execution_id": execution_id,
+                "feature_id": execution["feature_id"],
+                "worktree_path": execution["worktree_path"],
+            },
+        )
+        self._insert_outbox(
+            connection,
+            kind="IMPLEMENTATION_ABANDONED",
+            external_feature_id=execution["external_id"],
+            idempotency_key=f"execution:{execution_id}:abandoned",
+            payload={"execution_id": execution_id, "attention": "enzo:cancelled"},
+        )
+        self._insert_domain_event(
+            connection,
+            feature_id=execution["feature_id"],
+            event_type="EXECUTION_ABANDONED",
+            actor_type="HUMAN",
+            actor_id=actor_id,
+            subject_type="EXECUTION",
+            subject_id=execution_id,
+            payload={"worktree_cleanup_queued": True},
+        )
+        return EventResult(
+            EventOutcome.APPLIED,
+            "execution abandoned; worktree cleanup queued",
+            execution["feature_id"],
+        )
+
+    def recovery_snapshot(self, execution_id: str) -> dict[str, Any] | None:
+        with self.database.read() as connection:
+            execution = self._recovery_execution(connection, execution_id)
+            if execution is None:
+                return None
+            related = self._related_jobs(connection, execution)
+            failed = next(
+                (job for job in related if job["status"] == "FAILED"),
+                None,
+            )
+            active = next(
+                (
+                    job
+                    for job in related
+                    if job["kind"] == CLEANUP_ABANDONED_IMPLEMENTATION
+                    and job["status"] in {"PENDING", "RUNNING", "FAILED", "SUCCEEDED"}
+                ),
+                None,
+            )
+            if active is None:
+                active = next(
+                    (
+                        job
+                        for job in related
+                        if job["status"] in {"PENDING", "RUNNING"}
+                        and job["last_error"]
+                    ),
+                    None,
+                )
+            operation = active or failed
+            return {
+                "operation": operation["kind"] if operation else None,
+                "status": operation["status"] if operation else None,
+                "attempts": operation["attempts"] if operation else 0,
+                "error": operation["last_error"] if operation else execution["error"],
+                "can_retry": bool(failed and self._retry_allowed(execution, failed)),
+                "can_abandon": execution["status"] == "FAILED",
+            }
+
+    @staticmethod
+    def _retry_allowed(execution: sqlite3.Row, job: sqlite3.Row) -> bool:
+        if job["kind"] == CLEANUP_ABANDONED_IMPLEMENTATION:
+            return execution["status"] == "CANCELLED"
+        if job["kind"] == CLOSE_IMPLEMENTATION:
+            return (
+                execution["status"] == "SUCCEEDED"
+                and execution["feature_stage"] == "VERIFICATION"
+                and execution["revision_status"] == "APPROVED"
+            )
+        if job["kind"] == PREPARE_IMPLEMENTATION:
+            return (
+                execution["status"] == "FAILED"
+                and execution["feature_stage"] == "IMPLEMENTATION"
+                and execution["current_revision_id"] is None
+            )
+        return (
+            job["kind"] in {RUN_IMPLEMENTATION, VERIFY_IMPLEMENTATION}
+            and execution["status"] == "FAILED"
+            and execution["feature_stage"] == "IMPLEMENTATION"
+            and execution["revision_status"] == "FAILED"
+        )
+
+    def _recovery_execution(
+        self,
+        connection: sqlite3.Connection,
+        execution_id: str,
+    ) -> sqlite3.Row | None:
+        return connection.execute(
+            """SELECT e.*, f.external_id, f.stage AS feature_stage,
+                      ep.artifact_revision_id AS plan_revision_id,
+                      ir.status AS revision_status
+               FROM executions e
+               JOIN features f ON f.id = e.feature_id
+               JOIN execution_plans ep ON ep.id = e.execution_plan_id
+               LEFT JOIN implementation_revisions ir ON ir.id = e.current_revision_id
+               WHERE e.id = ? AND e.project_id = ?""",
+            (execution_id, self.project.id),
+        ).fetchone()
+
+    @staticmethod
+    def _related_jobs(
+        connection: sqlite3.Connection,
+        execution: sqlite3.Row,
+    ) -> list[sqlite3.Row]:
+        rows = connection.execute(
+            """SELECT * FROM jobs
+               WHERE kind IN (?, ?, ?, ?, ?)
+               ORDER BY updated_at DESC, created_at DESC""",
+            EXECUTION_JOB_KINDS,
+        ).fetchall()
+        related = []
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            direct_match = payload.get("execution_id") == execution["id"]
+            prepare_match = (
+                row["kind"] == PREPARE_IMPLEMENTATION
+                and payload.get("feature_id") == execution["feature_id"]
+                and payload.get("approved_plan_revision_id")
+                == execution["plan_revision_id"]
+            )
+            if direct_match or prepare_match:
+                related.append(row)
+        return related
+
+    @classmethod
+    def _failed_recovery_job(
+        cls,
+        connection: sqlite3.Connection,
+        execution: sqlite3.Row,
+    ) -> sqlite3.Row | None:
+        return next(
+            (job for job in cls._related_jobs(connection, execution) if job["status"] == "FAILED"),
+            None,
+        )
 
     def _approve_implementation(
         self,
@@ -361,8 +631,8 @@ class ExecutionCoordinator:
             current["feature_id"],
         )
 
-    @staticmethod
     def _current_review_context(
+        self,
         connection: sqlite3.Connection,
         external_feature_id: str,
     ) -> sqlite3.Row | None:
@@ -381,9 +651,9 @@ class ExecutionCoordinator:
                LEFT JOIN implementation_reviews review
                  ON review.implementation_revision_id = ir.id
                 AND review.status = 'PENDING'
-               WHERE f.external_id = ?
+               WHERE f.external_id = ? AND e.project_id = ?
                ORDER BY e.created_at DESC LIMIT 1""",
-            (external_feature_id,),
+            (external_feature_id, self.project.id),
         ).fetchone()
 
     def execute(self, job: ClaimedJob) -> None:
@@ -396,6 +666,8 @@ class ExecutionCoordinator:
                 self._verify(job)
             elif job.kind == CLOSE_IMPLEMENTATION:
                 self._close(job)
+            elif job.kind == CLEANUP_ABANDONED_IMPLEMENTATION:
+                self._cleanup_abandoned(job)
             else:
                 raise ValueError(f"unsupported execution job: {job.kind}")
         except BaseException as error:
@@ -439,6 +711,24 @@ class ExecutionCoordinator:
             execution_id=execution_id,
             external_feature_id=context["external_id"],
         )
+        with self.database.transaction() as connection:
+            if not self._job_is_current(connection, job):
+                return
+            now = _utc_now()
+            connection.execute(
+                """UPDATE executions
+                   SET status = 'RUNNING', base_sha = ?, branch = ?, worktree_path = ?,
+                       started_at = COALESCE(started_at, ?), updated_at = ?, error = NULL
+                   WHERE id = ? AND status IN ('PENDING', 'RUNNING')""",
+                (
+                    workspace.base_sha,
+                    workspace.branch,
+                    str(workspace.worktree_path),
+                    now,
+                    now,
+                    execution_id,
+                ),
+            )
         bootstrap = next(
             (command for command in self.project.commands if command.name == "bootstrap"),
             None,
@@ -469,16 +759,10 @@ class ExecutionCoordinator:
                 )
             connection.execute(
                 """UPDATE executions
-                   SET status = 'RUNNING', base_sha = ?, branch = ?, worktree_path = ?,
-                       current_revision_id = ?, started_at = COALESCE(started_at, ?),
-                       updated_at = ?, error = NULL
-                   WHERE id = ? AND status IN ('PENDING', 'RUNNING')""",
+                   SET current_revision_id = ?, updated_at = ?, error = NULL
+                   WHERE id = ? AND status = 'RUNNING'""",
                 (
-                    workspace.base_sha,
-                    workspace.branch,
-                    str(workspace.worktree_path),
                     implementation_revision_id,
-                    now,
                     now,
                     execution_id,
                 ),
@@ -494,6 +778,58 @@ class ExecutionCoordinator:
                     "implementation_revision_id": implementation_revision_id,
                     "expected_feature_version": context["feature_version"],
                 },
+            )
+            self._succeed_job(connection, job)
+
+    def _cleanup_abandoned(self, job: ClaimedJob) -> None:
+        with self.database.read() as connection:
+            if not self._job_is_current(connection, job):
+                return
+            execution = connection.execute(
+                """SELECT id, status, worktree_path, result_json
+                   FROM executions WHERE id = ? AND feature_id = ? AND project_id = ?""",
+                (
+                    job.payload["execution_id"],
+                    job.payload["feature_id"],
+                    self.project.id,
+                ),
+            ).fetchone()
+        if execution is None or execution["status"] != "CANCELLED":
+            with self.database.transaction() as connection:
+                self._cancel_job(connection, job, "abandoned cleanup preconditions are stale")
+            return
+        worktree_path = execution["worktree_path"] or job.payload.get("worktree_path")
+        worktree_cleaned = False
+        if worktree_path and Path(worktree_path).exists():
+            self.git.cleanup(
+                self.project,
+                worktree_path=Path(worktree_path),
+                force=True,
+            )
+            worktree_cleaned = True
+        with self.database.transaction() as connection:
+            if not self._job_is_current(connection, job):
+                return
+            result = json.loads(execution["result_json"] or "{}")
+            result["recovery"] = {
+                "abandoned": True,
+                "worktree_cleaned": worktree_cleaned,
+                "completed_at": _utc_now(),
+            }
+            connection.execute(
+                """UPDATE executions SET worktree_path = NULL, result_json = ?, updated_at = ?
+                   WHERE id = ? AND status = 'CANCELLED'""",
+                (_canonical_json(result), _utc_now(), execution["id"]),
+            )
+            self._insert_domain_event(
+                connection,
+                feature_id=job.payload["feature_id"],
+                event_type="ABANDONED_WORKTREE_CLEANED",
+                actor_type="SYSTEM",
+                actor_id="execution-coordinator",
+                subject_type="EXECUTION",
+                subject_id=execution["id"],
+                payload={"worktree_cleaned": worktree_cleaned},
             )
             self._succeed_job(connection, job)
 
@@ -1026,8 +1362,14 @@ class ExecutionCoordinator:
                     connection,
                     kind="IMPLEMENTATION_FAILED",
                     external_feature_id=feature["external_id"],
-                    idempotency_key=f"job:{job.id}:failed",
-                    payload={"job_id": job.id, "error": message, "attention": "enzo:failed"},
+                    idempotency_key=f"job:{job.id}:attempt:{job.attempts}:failed",
+                    payload={
+                        "job_id": job.id,
+                        "execution_id": execution_id,
+                        "attempt": job.attempts,
+                        "error": message,
+                        "attention": "enzo:failed",
+                    },
                 )
 
     @staticmethod

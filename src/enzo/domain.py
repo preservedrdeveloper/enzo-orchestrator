@@ -89,6 +89,11 @@ class CommandAction(StrEnum):
     ADDRESS_WITH_AGENT = "ADDRESS_WITH_AGENT"
 
 
+class ExecutionRecoveryAction(StrEnum):
+    RETRY = "RETRY"
+    ABANDON = "ABANDON"
+
+
 class ReviewTarget(StrEnum):
     INTENT = "INTENT"
     SPEC = "SPEC"

@@ -393,9 +393,47 @@ class PlaneTaskManagerAdapter:
                 f"<pre>@enzo address-with-agent implementation@{revision}</pre>"
             )
         if message.kind == "IMPLEMENTATION_FAILED":
+            attempt = int(payload.get("attempt", 1))
+            execution_link = ""
+            if payload.get("execution_id"):
+                execution_url = (
+                    f"{self.binding.artifact_base_url}/executions/"
+                    f"{quote(str(payload['execution_id']), safe='')}"
+                )
+                execution_link = (
+                    f'<p><a href="{html.escape(execution_url, quote=True)}">'
+                    "Open implementation workspace</a></p>"
+                )
             return (
                 "<h3>Enzo · Implementation execution failed</h3>"
+                f"<p><strong>Attempt:</strong> {attempt}</p>"
                 f"<pre>{html.escape(str(payload['error'])[:1_000])}</pre>"
-                "<p>The worktree has been preserved for inspection.</p>"
+                f"{execution_link}"
+                "<p>The worktree has been preserved. Open the implementation review "
+                "workspace to inspect, retry, or abandon this execution.</p>"
+            )
+        if message.kind == "IMPLEMENTATION_RETRY_QUEUED":
+            execution_url = (
+                f"{self.binding.artifact_base_url}/executions/"
+                f"{quote(str(payload['execution_id']), safe='')}"
+            )
+            return (
+                "<h3>Enzo · IMPLEMENTATION RETRY QUEUED</h3>"
+                f"<p>Retrying {html.escape(str(payload['operation']))} "
+                f"(attempt {int(payload['attempt'])}).</p>"
+                f'<p><a href="{html.escape(execution_url, quote=True)}">'
+                "Open implementation workspace</a></p>"
+            )
+        if message.kind == "IMPLEMENTATION_ABANDONED":
+            execution_url = (
+                f"{self.binding.artifact_base_url}/executions/"
+                f"{quote(str(payload['execution_id']), safe='')}"
+            )
+            return (
+                "<h3>Enzo · IMPLEMENTATION ABANDONED</h3>"
+                "<p>The execution was cancelled and deterministic worktree cleanup "
+                "was queued.</p>"
+                f'<p><a href="{html.escape(execution_url, quote=True)}">'
+                "Open preserved execution history</a></p>"
             )
         raise ValueError(f"unsupported Plane outbox message: {message.kind}")

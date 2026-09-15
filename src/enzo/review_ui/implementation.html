@@ -56,6 +56,22 @@
         <span id="review-guidance">Confirm the diff satisfies the approved plan and verification contract.</span>
       </div>
 
+      <section id="recovery-panel" class="recovery-panel" hidden>
+        <div class="recovery-copy">
+          <span id="recovery-state" class="recovery-state">FAILED</span>
+          <div>
+            <h2 id="recovery-title">Execution needs attention</h2>
+            <p id="recovery-description">The worktree and evidence are preserved.</p>
+          </div>
+        </div>
+        <pre id="recovery-error" class="recovery-error"></pre>
+        <div class="recovery-actions">
+          <button id="inspect-failure" class="button secondary" type="button">Inspect evidence</button>
+          <button id="retry-execution" class="button primary" type="button" hidden>Retry</button>
+          <button id="abandon-execution" class="button danger" type="button" hidden>Abandon</button>
+        </div>
+      </section>
+
       <div class="view-toolbar">
         <div class="view-tabs" role="tablist" aria-label="Implementation view">
           <button id="view-overview" class="view-tab active" type="button" role="tab"
@@ -173,6 +189,18 @@
   </main>
 
   <div id="toast" class="toast" role="status" hidden></div>
+
+  <dialog id="abandon-dialog" class="confirm-dialog">
+    <form method="dialog" class="confirm-shell">
+      <div class="eyebrow">Destructive cleanup</div>
+      <h2>Abandon this execution?</h2>
+      <p>The execution will be cancelled. Enzo will remove its isolated worktree with Git and preserve the recorded evidence and failure history.</p>
+      <div class="dialog-actions">
+        <button class="button ghost" value="cancel" type="submit">Keep execution</button>
+        <button id="confirm-abandon" class="button danger" value="default" type="button">Abandon and clean worktree</button>
+      </div>
+    </form>
+  </dialog>
   <script src="/review-assets/implementation.js"></script>
 </body>
 </html>

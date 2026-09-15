@@ -175,19 +175,29 @@ class GitWorkspaceManager:
         ).strip()
         return output.split(maxsplit=1)[0] if output else None
 
-    def cleanup(self, project: ProjectConfig, *, worktree_path: Path) -> None:
+    def cleanup(
+        self,
+        project: ProjectConfig,
+        *,
+        worktree_path: Path,
+        force: bool = False,
+    ) -> None:
         project_key = _safe_component(project.id)
         checkout = self.repository_root / project_key / "checkout"
+        managed_root = (self.worktree_root / project_key).resolve()
+        resolved_worktree = worktree_path.resolve()
+        if resolved_worktree == managed_root or not resolved_worktree.is_relative_to(
+            managed_root
+        ):
+            raise GitOperationError("refusing to clean a path outside the managed worktree root")
         lock_path = self.repository_root / project_key / ".worktree.lock"
         with _exclusive_lock(lock_path):
-            if worktree_path.exists():
-                self._run(
-                    "-C",
-                    str(checkout),
-                    "worktree",
-                    "remove",
-                    str(worktree_path),
-                )
+            if resolved_worktree.exists():
+                arguments = ["-C", str(checkout), "worktree", "remove"]
+                if force:
+                    arguments.append("--force")
+                arguments.append(str(resolved_worktree))
+                self._run(*arguments)
             self._run("-C", str(checkout), "worktree", "prune")
 
     @staticmethod
